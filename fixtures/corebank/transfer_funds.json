@@ -1,0 +1,293 @@
+{
+  "capability_id": "transfer_funds",
+  "version": "1.0.0",
+  "status": "draft",
+  "description": "Transfer funds from a member's savings account to an external target account, including the confirmation step that posts it to the ledger.",
+  "target_app": {
+    "app_id": "corebank",
+    "surface_type": "web"
+  },
+  "risk_class": "risky",
+  "provenance": {
+    "created_from_run": "fixture_handcrafted_transfer_funds",
+    "created_at": "2026-09-13T00:00:00Z",
+    "last_validated_at": null,
+    "confidence": 0.0
+  },
+  "input_params": [
+    {
+      "name": "member_id",
+      "type": "string",
+      "required": true,
+      "description": "Customer ID of the member to transfer from",
+      "example": "10001"
+    },
+    {
+      "name": "amount",
+      "type": "currency",
+      "required": true,
+      "description": "Amount in USD to transfer out of savings",
+      "example": "125.00"
+    },
+    {
+      "name": "target_account",
+      "type": "string",
+      "required": true,
+      "description": "External target account number to credit",
+      "example": "778812345"
+    }
+  ],
+  "steps": [
+    {
+      "step_id": "s1",
+      "action": "navigate",
+      "target": {
+        "kind": "url",
+        "value": "/search"
+      },
+      "risk_class": "safe",
+      "description": "Open the Member Search screen"
+    },
+    {
+      "step_id": "s2",
+      "action": "type",
+      "target": {
+        "kb_element_id": "corebank.search.member_id_field",
+        "locator": {
+          "primary": {
+            "strategy": "role+name",
+            "value": "textbox:Customer ID"
+          },
+          "fallbacks": [
+            {
+              "strategy": "css",
+              "value": "input[name=customer_id]"
+            }
+          ]
+        }
+      },
+      "value_from_param": "member_id",
+      "risk_class": "safe",
+      "description": "Enter the Customer ID"
+    },
+    {
+      "step_id": "s3",
+      "action": "click",
+      "target": {
+        "kb_element_id": "corebank.search.submit_button",
+        "locator": {
+          "primary": {
+            "strategy": "role+name",
+            "value": "button:Search"
+          },
+          "fallbacks": [
+            {
+              "strategy": "css",
+              "value": "form[action='/search'] input[type=submit]"
+            }
+          ]
+        }
+      },
+      "risk_class": "safe",
+      "description": "Run the member lookup"
+    },
+    {
+      "step_id": "s4",
+      "action": "click",
+      "target": {
+        "kb_element_id": "corebank.member.transfer_tab",
+        "locator": {
+          "primary": {
+            "strategy": "role+name",
+            "value": "link:Transfer"
+          },
+          "fallbacks": [
+            {
+              "strategy": "css",
+              "value": "a[href*='tab=transfer']"
+            }
+          ]
+        }
+      },
+      "risk_class": "safe",
+      "description": "Switch to the Transfer tab"
+    },
+    {
+      "step_id": "s5",
+      "action": "click",
+      "target": {
+        "kb_element_id": "corebank.member.start_transfer_link",
+        "locator": {
+          "primary": {
+            "strategy": "role+name",
+            "value": "link:Start a Funds Transfer"
+          },
+          "fallbacks": [
+            {
+              "strategy": "css",
+              "value": "a[href$='/transfer']"
+            }
+          ]
+        }
+      },
+      "risk_class": "safe",
+      "description": "Open the funds transfer form"
+    },
+    {
+      "step_id": "s6",
+      "action": "type",
+      "target": {
+        "kb_element_id": "corebank.transfer.amount_field",
+        "locator": {
+          "primary": {
+            "strategy": "role+name",
+            "value": "textbox:Amount (USD)"
+          },
+          "fallbacks": [
+            {
+              "strategy": "css",
+              "value": "input[name=amount]"
+            }
+          ]
+        }
+      },
+      "value_from_param": "amount",
+      "risk_class": "safe",
+      "description": "Enter the transfer amount"
+    },
+    {
+      "step_id": "s7",
+      "action": "type",
+      "target": {
+        "kb_element_id": "corebank.transfer.target_account_field",
+        "locator": {
+          "primary": {
+            "strategy": "role+name",
+            "value": "textbox:Target Account Number"
+          },
+          "fallbacks": [
+            {
+              "strategy": "css",
+              "value": "input[name=target_account]"
+            }
+          ]
+        }
+      },
+      "value_from_param": "target_account",
+      "risk_class": "safe",
+      "description": "Enter the target account number"
+    },
+    {
+      "step_id": "s8",
+      "action": "click",
+      "target": {
+        "kb_element_id": "corebank.transfer.review_button",
+        "locator": {
+          "primary": {
+            "strategy": "role+name",
+            "value": "button:Review Transfer"
+          },
+          "fallbacks": [
+            {
+              "strategy": "css",
+              "value": "form[method=POST] input[type=submit]"
+            }
+          ]
+        }
+      },
+      "risk_class": "safe",
+      "description": "Submit the instruction for review \u2014 nothing is posted yet"
+    },
+    {
+      "step_id": "s9",
+      "action": "click",
+      "target": {
+        "kb_element_id": "corebank.transfer.confirm_button",
+        "locator": {
+          "primary": {
+            "strategy": "role+name",
+            "value": "button:Confirm Transfer"
+          },
+          "fallbacks": [
+            {
+              "strategy": "css",
+              "value": "form[action$='/transfer/confirm'] input[type=submit]"
+            }
+          ]
+        }
+      },
+      "risk_class": "risky",
+      "description": "Post the transfer to the ledger \u2014 the one irreversible action in this flow"
+    },
+    {
+      "step_id": "s10",
+      "action": "extract",
+      "target": {
+        "kb_element_id": "corebank.transfer.confirmation_reference_cell",
+        "locator": {
+          "primary": {
+            "strategy": "css",
+            "value": "td:nth-child(2) b"
+          },
+          "fallbacks": []
+        }
+      },
+      "risk_class": "safe",
+      "description": "Read the confirmation reference off the posted-transfer receipt"
+    }
+  ],
+  "checkpoint": {
+    "type": "text_contains",
+    "text": "Transfer completed successfully"
+  },
+  "outputs": [
+    {
+      "name": "confirmation_reference",
+      "type": "string",
+      "source_step": "s10"
+    }
+  ],
+  "known_outcomes": [
+    {
+      "code": "member_not_found",
+      "type": "business_outcome",
+      "detector": {
+        "text_contains": "No member found with that ID"
+      },
+      "message": "No member found with that ID"
+    },
+    {
+      "code": "permission_denied",
+      "type": "business_outcome",
+      "detector": {
+        "text_contains": "is restricted"
+      },
+      "message": "This member's account is restricted and cannot be serviced"
+    },
+    {
+      "code": "session_expired",
+      "type": "recoverable",
+      "detector": {
+        "url_contains": "/login"
+      },
+      "message": "The operator session expired mid-flow; the transfer was not posted",
+      "recovery": "reauthenticate_and_retry"
+    },
+    {
+      "code": "insufficient_funds",
+      "type": "business_outcome",
+      "detector": {
+        "text_contains": "Insufficient funds in savings"
+      },
+      "message": "The member's savings balance does not cover this transfer"
+    }
+  ],
+  "review": {
+    "status": "not_reviewed",
+    "optimization_notes": null,
+    "reviewed_at": null
+  },
+  "requires": [
+    "operator_login"
+  ]
+}
