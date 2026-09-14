@@ -50,6 +50,7 @@ run; `python seed.py` re-seeds them from scratch.
 | Business — not found | Search `99999` → "No member found with that ID" banner |
 | Business — permission denied | Search `10007` or `10009` → restricted banner |
 | Recoverable — session expired mid-flow | Confirm a transfer for `10003` → redirect to `/login` |
+| Hard failure — unhandled error | Submit a transfer with amount > 1,000,000 for any active customer |
 
 ## Seed data
 

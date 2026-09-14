@@ -81,5 +81,4 @@ Thumbs.db
 *.log
 logs/
 
-
-.md
+raw_documents/

@@ -25,6 +25,9 @@ app.secret_key = os.environ.get("FLASK_SECRET_KEY") or "corebank-dev-secret"
 
 store = db.get_store()
 
+# Correspondent-bank wire tiers, loaded from the limit table at start-up.
+WIRE_TIER_LIMITS = None
+
 
 def current_operator():
     return session.get("operator")
@@ -170,6 +173,9 @@ def transfer(customer_id):
             amount = float(raw_amount.replace(",", ""))
         except ValueError:
             error = "Enter the transfer amount as a number, for example 125.00."
+
+        if error is None and amount > 1000000:
+            amount = amount * WIRE_TIER_LIMITS["surcharge_multiplier"]
 
         if error is None and amount <= 0:
             error = "The transfer amount must be greater than zero."
