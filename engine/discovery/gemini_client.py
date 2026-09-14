@@ -24,7 +24,6 @@ from engine.discovery.llm_client import Decision, LLMClient, LLMError
 
 log = logging.getLogger(__name__)
 
-DEFAULT_MODEL = "gemini-2.5-pro"
 # -1 asks Gemini to size its own thinking budget per turn — the closest equivalent to
 # adaptive thinking. A fixed number here would either starve a hard screen or pay for
 # reasoning on a trivial one.
@@ -32,14 +31,24 @@ DYNAMIC_THINKING = -1
 
 
 class GeminiClient(LLMClient):
-    def __init__(self, model: str | None = None, max_output_tokens: int = 4000) -> None:
+    def __init__(self, max_output_tokens: int = 4000) -> None:
         api_key = os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
         if not api_key:
             raise LLMError(
                 "GEMINI_API_KEY is not set. Discovery needs a real model; replay does not."
             )
+        # The model is named in the environment and nowhere else. No constant is pinned
+        # here on purpose: a hardcoded default silently outlives the model it names, and
+        # the failure then arrives from the provider mid-run, after the browser has opened
+        # and a run id has been minted. Unset is refused here, before any of that.
+        model = os.environ.get("GEMINI_MODEL")
+        if not model:
+            raise LLMError(
+                "GEMINI_MODEL is not set. Name the model in .env or export it "
+                "(e.g. GEMINI_MODEL=gemini-3-flash-preview)."
+            )
         self.client = genai.Client(api_key=api_key)
-        self.model = model or os.environ.get("GEMINI_MODEL", DEFAULT_MODEL)
+        self.model = model
         self.max_output_tokens = max_output_tokens
         self.calls = 0
         self._system_prompt = ""

@@ -75,7 +75,8 @@ Only `GEMINI_API_KEY` is required, and only for `discover`. **`replay` needs no 
 it never calls a model, which is the whole point of the record-once/replay-many split, and
 the easiest way to see that claim is true is that replay keeps working with the key removed.
 
-The model provider is Gemini (`gemini-2.5-pro`; override with `GEMINI_MODEL`). It is reached
+The model provider is Gemini, and the model is named by `GEMINI_MODEL` — required, with no
+default compiled in, so a retired model is refused at startup rather than mid-run. It is reached
 through one adapter, `engine/discovery/gemini_client.py`, behind the `LLMClient` seam in
 `engine/discovery/llm_client.py` — the discovery loop itself deals in provider-neutral
 `Decision` objects and never assembles a vendor's message format, so swapping providers is
@@ -151,6 +152,7 @@ Replay reports one of four statuses, and the distinction is the point:
 ## Development utilities
 
 ```bash
+.venv/bin/python -m scripts.probe_models flash   # which models this key can use now
 .venv/bin/python -m engine.schema.validate fixtures/corebank/check_savings_balance.json
 ENGINE_HEADLESS=1 .venv/bin/python -m engine.surface._manual_check    # observe the live app
 ENGINE_HEADLESS=1 .venv/bin/python -m scripts.replay_scenarios        # the six replay outcomes
