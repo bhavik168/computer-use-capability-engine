@@ -58,10 +58,7 @@ playwright-report/
 test-results/
 traces/
 videos/
-screenshots/
 *.trace.zip
-runs/
-artifacts/
 
 # ---- Node (only if tooling ever needs it) ----
 node_modules/
@@ -82,3 +79,8 @@ Thumbs.db
 logs/
 
 raw_documents/
+# ---- Engine runtime output ----
+# Real runtime output must not be committed; deliberate example fixtures must.
+data/**/*.json
+!data/artifacts/examples/**
+!fixtures/**

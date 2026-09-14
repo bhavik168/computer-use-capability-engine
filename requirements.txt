@@ -1,3 +1,7 @@
-Flask==3.0.3
-pymongo==4.10.1
-python-dotenv==1.0.1
+# Engine dependencies.
+# One-time setup after install: `playwright install chromium`.
+pydantic==2.9.2
+playwright==1.62.0
+PyYAML==6.0.2
+google-genai==2.23.0
+click==8.5.0
