@@ -7,6 +7,17 @@ legacy bank back-office system: server-rendered Flask + Jinja2, table-based mark
 ## Run it
 
 ```bash
+./run.sh
+```
+
+That is the whole thing. `run.sh` creates the venv if it is missing, installs
+dependencies, copies `.env.example` to `.env` on first run, frees port 5050 if a previous
+server is still holding it, and serves on http://127.0.0.1:5050. Override the port with
+`PORT=8080 ./run.sh`.
+
+Manual equivalent, if you would rather drive it yourself:
+
+```bash
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
@@ -15,10 +26,34 @@ cp .env.example .env        # fill in MONGODB_URI + FLASK_SECRET_KEY
 python app.py               # http://127.0.0.1:5050
 ```
 
-`MONGODB_URI` is optional. If it is unset or the cluster is unreachable, the app logs a
+## Database
+
+`MONGODB_URI` is optional. If it is unset or the server is unreachable, the app logs a
 notice and falls back to an equivalent in-process store holding the same seed data, so the
 automation target always comes up. With Mongo configured, collections are seeded on first
 run; `python seed.py` re-seeds them from scratch.
+
+**Local MongoDB (no Docker required).** `mongod` runs natively on macOS via Homebrew:
+
+```bash
+brew tap mongodb/brew
+brew trust mongodb/brew                  # Homebrew requires trusting third-party taps
+brew install mongodb-community
+brew services start mongodb-community    # launchd service on 127.0.0.1:27017
+```
+
+Then set, in `.env`:
+
+```
+MONGODB_URI=mongodb://127.0.0.1:27017/corebank
+```
+
+Service control: `brew services stop mongodb-community` /
+`brew services restart mongodb-community`. Inspect the data with
+`mongosh mongodb://127.0.0.1:27017/corebank`.
+
+**MongoDB Atlas** works identically — create a free M0 cluster and paste its
+`mongodb+srv://...` string into `MONGODB_URI` instead.
 
 ## Sign-on credentials
 
@@ -61,11 +96,12 @@ run; `python seed.py` re-seeds them from scratch.
 ## Verification
 
 ```bash
-python smoke_test.py
+./test.sh
 ```
 
 Exercises all six acceptance criteria from §12 of the spec plus the auth guards, the
-transfer validation paths, and the absence of an `/api` surface.
+transfer validation paths, and the absence of an `/api` surface. When running against
+MongoDB it re-seeds the collections first, so the run is repeatable.
 
 ## Deliberate design notes
 

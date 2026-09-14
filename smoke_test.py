@@ -3,7 +3,7 @@
 Runs against the Flask test client (no server needed):  python smoke_test.py
 """
 
-from app import app
+from app import app, store
 
 FAILURES = []
 
@@ -23,6 +23,13 @@ def sign_on(client, username="operator1", password="pass1234"):
 
 def main():
     app.config["TESTING"] = True
+
+    # Balances are asserted against exact seed values, so start from a known
+    # dataset. Without this the run is not repeatable against a persistent
+    # database: each pass debits 10001 and the next one fails.
+    if store.backend == "mongodb":
+        store.seed()
+        print("(re-seeded MongoDB to the canonical dataset)\n")
 
     # 1. Root redirects to login.
     with app.test_client() as c:
