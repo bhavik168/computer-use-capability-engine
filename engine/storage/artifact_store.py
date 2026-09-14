@@ -70,6 +70,40 @@ class ArtifactStore:
     def list(self) -> list[str]:
         return sorted(p.stem for p in self.root.glob("*.json"))
 
+    def get_latest(self, capability_id: str) -> Artifact | None:
+        """The stored artifact for a capability, or None if there isn't one yet.
+
+        `load` raising is right for a caller that named a capability and meant it. The
+        intent planner is asking a different question — "is this already recorded, or
+        does it need discovering?" — where absence is an expected answer rather than an
+        error, so it gets an expression instead of a try/except at every call site.
+        """
+        try:
+            return self.load(capability_id)
+        except FileNotFoundError:
+            return None
+
+    def list_capabilities(self) -> list[dict]:
+        """The catalog the intent parser matches a plain-language goal against.
+
+        Deliberately thin: id, description and parameter names are what decide whether
+        a goal is already covered. Handing the model whole artifacts would put recorded
+        locators and step sequences in front of it for a question that does not turn on
+        them, and would grow the prompt with every capability ever recorded.
+        """
+        catalog = []
+        for capability_id in self.list():
+            artifact = self.load(capability_id)
+            catalog.append(
+                {
+                    "capability_id": artifact.capability_id,
+                    "description": artifact.description,
+                    "input_params": [p.name for p in artifact.input_params],
+                    "requires": list(artifact.requires),
+                }
+            )
+        return catalog
+
 
 def _version_tuple(version: str) -> tuple[int, int, int]:
     major, minor, patch = version.split(".")

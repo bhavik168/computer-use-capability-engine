@@ -153,6 +153,49 @@ class GeminiClient(LLMClient):
         )
         self._pending_call_name = None
 
+    # ------------------------------------------------------------------ one-shot
+
+    def complete(self, system: str, user: str) -> str:
+        """A single stateless completion, outside the discovery conversation.
+
+        Used by the intent parser, which asks one question and wants JSON back — no
+        tools, no grounded enum, nothing to thread. It deliberately does not touch
+        `self._history`: a parse must never end up as a turn in a discovery run's
+        conversation, and a client instance is shared between the two.
+
+        `temperature=0` and a JSON response type because this is parsing. The same
+        prompt against the same catalog should produce the same plan; a plan that
+        varied run to run would make the confirmation step meaningless.
+        """
+        config = types.GenerateContentConfig(
+            system_instruction=system,
+            max_output_tokens=self.max_output_tokens,
+            temperature=0,
+            response_mime_type="application/json",
+            # No tools are declared here; disabling AFC explicitly keeps the SDK from
+            # warning about a function-calling path this call never takes.
+            automatic_function_calling=types.AutomaticFunctionCallingConfig(disable=True),
+        )
+        self.calls += 1
+        try:
+            response = self.client.models.generate_content(
+                model=self.model,
+                contents=[types.Content(role="user", parts=[types.Part(text=user)])],
+                config=config,
+            )
+        except genai_errors.ClientError as exc:
+            raise LLMError(f"Gemini rejected the request: {exc}") from exc
+        except genai_errors.ServerError as exc:
+            raise LLMError(f"Gemini server error: {exc}") from exc
+        except genai_errors.APIError as exc:
+            raise LLMError(f"Gemini call failed: {exc}") from exc
+
+        text = getattr(response, "text", None)
+        if not text:
+            finish = getattr((getattr(response, "candidates", None) or [None])[0], "finish_reason", None)
+            raise LLMError(f"Gemini returned no text (finish_reason={finish})")
+        return text
+
     # ------------------------------------------------------------------ helpers
 
     @staticmethod

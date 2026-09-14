@@ -44,6 +44,7 @@ Point it at a different application, or a different domain entirely, and none of
 | `target_app/` | CoreBank Servicing Console — a legacy-styled Flask app used as *a* target. Swappable. |
 | `fixtures/` | Hand-written artifacts for one target, used to build and prove Replay before Discovery existed. Not discovery output. |
 | `data/` | What the system has learned: `artifacts/` (capabilities), `kb/` (screens, elements, learned outcomes), `escalations/`. Empty on a fresh checkout. |
+| `scripts/intent_scenarios.py` | Offline checks for the intent parser: plan validation, replay-vs-discover, secret redaction. No browser, no model. |
 | `evidence/` | Per-run reports with per-step screenshots, for every outcome. Empty until you run something. |
 
 ## Setup
@@ -138,6 +139,31 @@ Every run — success, business outcome, escalation or hard failure — writes a
 per-step screenshots under `evidence/discovery_runs/<run_id>/` or
 `evidence/replay_runs/<run_id>/`.
 
+## One sentence instead of the flags
+
+`run` is steps 1–3 without hand-assembling any of it. One model call turns the sentence into
+an ordered plan — which capabilities, in what order, replaying what is already recorded and
+discovering only what is not — and prints it for confirmation before a browser opens. Nothing
+about *how* to drive the application is decided here; a recorded capability still replays with
+no LLM in the loop.
+
+```bash
+.venv/bin/python -m engine.cli run --target $ENGINE_TARGET \
+    --prompt "Sign on to the console as operator1/pass1234, then look up member 10001 \
+              and get their savings balance"
+
+Plan (2 calls) against http://127.0.0.1:5050:
+1. [REPLAY (existing)] operator_login(username=operator1, password=[REDACTED])
+2. [REPLAY (existing)] check_savings_balance(member_id=10001) [requires: operator_login]
+
+Proceed? [y/N]:
+```
+
+A value the prompt supplies for a credential is marked secret by the parser and stays that way
+through the run: redacted in the plan preview, and never written to the artifact, the logs or
+the reports. `--dry-run` prints the plan and stops without opening a browser; `--yes` skips the
+confirmation, for scripted and CI use.
+
 ## Outcomes
 
 Replay reports one of four statuses, and the distinction is the point:
@@ -156,6 +182,7 @@ Replay reports one of four statuses, and the distinction is the point:
 .venv/bin/python -m engine.schema.validate fixtures/corebank/check_savings_balance.json
 ENGINE_HEADLESS=1 .venv/bin/python -m engine.surface._manual_check    # observe the live app
 ENGINE_HEADLESS=1 .venv/bin/python -m scripts.replay_scenarios        # the six replay outcomes
+.venv/bin/python -m scripts.intent_scenarios           # plan parsing, offline (--live to parse for real)
 ```
 
 The two JSON files in `fixtures/corebank/` are **hand-crafted fixtures** used to build

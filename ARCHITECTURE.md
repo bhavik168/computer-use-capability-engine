@@ -31,6 +31,8 @@ flowchart TB
 
     subgraph Boundary["System boundary — single process, v1"]
         API[Capability API / CLI]
+        API --> Intent[Intent Parser<br/>Goal → ordered capability plan]
+        Intent -.calls.-> LLM
         API --> Discovery[Discovery Engine<br/>LLM loop + policy gate]
         API --> Replay[Replay Engine<br/>No LLM; deterministic]
         API --> Escalation[Escalation Service<br/>Pause, handoff, resume]
@@ -56,9 +58,13 @@ flowchart TB
 
 Everything inside the system boundary runs as a single process, with no queues or separate
 services. The only external dependencies are the LLM API, the target application, and the human
-operator, each reached through a single, well-defined seam — the Discovery Engine is the only
-component that calls the LLM, the Surface Interface is the only component that drives the target
-application, and the Escalation Service is the only component that engages a human.
+operator, each reached through a single, well-defined seam — the Surface Interface is the only
+component that drives the target application, and the Escalation Service is the only component
+that engages a human. The LLM is reached by two components and in two distinct shapes: the
+Discovery Engine's agent loop, which is the only model call that can cause an action against the
+target, and the Intent Parser's single stateless completion, which produces a plan and executes
+nothing. Both go through the same provider adapter, so there is still one integration path to the
+model API.
 
 Storage is deliberately split into three stores rather than one, because each has a different
 write pattern and retention need. The **Artifact Store** holds capabilities, written once per
@@ -202,6 +208,14 @@ called only by the Discovery Engine, and only during the Decide step; the Replay
 calls it. The target application is driven exclusively through the Surface Interface; no other
 component addresses it directly. The human operator is engaged only through the Escalation
 Service, which owns the pause, hand-off, and resume of the live session.
+
+For a plain-language goal, the flow runs from the caller through the Capability API to the Intent
+Parser, which is handed the Artifact Store's catalog and returns an ordered list of capability
+calls — which capability, in what order, with which parameters, and whether each one already
+exists. The plan is printed and confirmed before anything is executed, and execution then follows
+one of the two flows below per call: a capability already in the Artifact Store is replayed, and
+only one that is not is discovered. The parser proposes; it never drives the target application
+itself.
 
 For a new goal, the flow runs from the AI Agent through the Capability API to the Discovery
 Engine, which consults the Knowledge Base for guidance, passes every proposed action through the

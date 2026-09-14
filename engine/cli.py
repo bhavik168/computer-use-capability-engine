@@ -8,6 +8,7 @@ looking, or has learned from an earlier run.
 
 from __future__ import annotations
 
+import functools
 import json
 import logging
 import sys
@@ -22,6 +23,13 @@ from engine.discovery.gemini_client import GeminiClient
 from engine.discovery.llm_client import LLMError
 from engine.discovery.loop_guard import LoopGuard
 from engine.escalation.service import EscalationService
+from engine.intent import (
+    IntentParseError,
+    execute_plan,
+    format_plan_for_confirmation,
+    parse_intent,
+    reconcile_with_store,
+)
 from engine.knowledge_base.service import KnowledgeBaseService
 from engine.learning.outcome_learner import OutcomeLearner
 from engine.policy.policy import DEFAULT_POLICY_PATH, Policy
@@ -32,6 +40,9 @@ from engine.schema.artifact import Artifact
 from engine.storage.artifact_store import ArtifactStore
 from engine.storage.escalation_store import EscalationStore
 from engine.surface.playwright_surface import PlaywrightSurface
+
+
+log = logging.getLogger(__name__)
 
 
 def _configure_logging(verbose: bool) -> None:
@@ -101,63 +112,131 @@ def cli(ctx: click.Context, verbose: bool, headless: bool, policy: str) -> None:
 def discover(ctx, goal, target, capability_id, description, app_id, params, secrets,
              requires, max_steps, timeout, no_escalation):
     """Run the LLM-driven discovery loop and record a capability from a successful run."""
+    result = _run_discovery(
+        goal=goal,
+        target=target,
+        capability_id=capability_id,
+        description=description,
+        params=_parse_params(params),
+        secret_params=set(secrets),
+        requires=list(requires),
+        app_id=app_id,
+        max_steps=max_steps,
+        timeout=timeout,
+        headless=ctx.obj["headless"],
+        policy_path=ctx.obj["policy_path"],
+        escalation_enabled=not no_escalation,
+    )
+    _echo_discovery(result)
+    if result["status"] != "success":
+        raise SystemExit(1)
+
+
+def _run_discovery(
+    *,
+    goal: str,
+    target: str,
+    capability_id: str,
+    description: str,
+    params: dict[str, str],
+    secret_params: set[str],
+    requires: list[str],
+    app_id: str | None = None,
+    max_steps: int = 25,
+    timeout: int = 180,
+    headless: bool = False,
+    policy_path: str = str(DEFAULT_POLICY_PATH),
+    escalation_enabled: bool = True,
+) -> dict:
+    """One discovery run, in process.
+
+    Split out of the `discover` command so the intent planner can invoke exactly the
+    path an operator would have typed, rather than a parallel implementation of it that
+    would drift. The command keeps the flag parsing and the exit code; everything that
+    actually runs lives here, and the result is returned as data instead of printed, so
+    a caller running several capabilities in a plan can decide what to do next.
+    """
     try:
         llm = GeminiClient()
     except LLMError as exc:
         raise click.ClickException(str(exc)) from exc
 
     app = _app_id(app_id, target)
-    values = _parse_params(params)
     knowledge_base = KnowledgeBaseService()
     store = ArtifactStore()
 
-    with PlaywrightSurface(
-        base_url=target, headless=ctx.obj["headless"] or None
-    ) as surface:
+    with PlaywrightSurface(base_url=target, headless=headless or None) as surface:
         escalation = (
-            None
-            if no_escalation
-            else EscalationService(interactive=sys.stdin.isatty(), surface=surface)
+            EscalationService(interactive=sys.stdin.isatty(), surface=surface)
+            if escalation_enabled
+            else None
         )
         # Any prerequisite capability runs first, so discovery begins from the state a
         # replay of this capability would also begin from.
         if requires:
-            prerequisite_result = _establish(store, surface, list(requires), values)
+            prerequisite_result = _establish(store, surface, list(requires), params)
             if prerequisite_result:
                 raise click.ClickException(prerequisite_result)
 
         engine = DiscoveryEngine(
             surface=surface,
             llm_client=llm,
-            policy=Policy(target, ctx.obj["policy_path"]),
+            policy=Policy(target, policy_path),
             loop_guard=LoopGuard(max_steps=max_steps, timeout_seconds=timeout),
             app_id=app,
             knowledge_base=knowledge_base,
             escalation=escalation,
             report_generator=ReportGenerator(),
         )
-        trace = engine.run(goal=goal, target_url=target, param_values=values)
+        trace = engine.run(goal=goal, target_url=target, param_values=params)
 
-    click.echo(f"\nDiscovery status : {trace.status}")
-    click.echo(f"Steps            : {len(trace.steps)} ({trace.llm_calls} LLM calls)")
-    click.echo(f"Report           : evidence/discovery_runs/{trace.run_id}/report.md")
+    result = {
+        "kind": "discovery",
+        "capability_id": capability_id,
+        "trace_status": trace.status,
+        "steps": len(trace.steps),
+        "llm_calls": trace.llm_calls,
+        "report": f"evidence/discovery_runs/{trace.run_id}/report.md",
+        "run_id": trace.run_id,
+    }
 
     if trace.status != "completed":
         # A partial artifact is worse than none: it would look replayable and would not be.
-        click.echo(f"Stop reason      : {trace.stop_reason}")
-        click.echo("\nNo artifact saved — the run did not complete.")
-        raise SystemExit(1)
+        result.update(status="hard_failure", message=trace.stop_reason, artifact=None)
+        return result
 
     artifact = Recorder(knowledge_base).compile(
         trace, capability_id, description,
-        secret_params=set(secrets), requires=list(requires),
+        secret_params=set(secret_params), requires=list(requires),
     )
     path = store.save(artifact)
-    click.echo(f"Artifact         : {path} (v{artifact.version}, {artifact.risk_class})")
-    click.echo(f"Parameters       : {[p.name for p in artifact.input_params] or 'none'}")
+    result.update(
+        status="success",
+        artifact=str(path),
+        version=artifact.version,
+        risk_class=artifact.risk_class,
+        input_params=[p.name for p in artifact.input_params],
+        known_outcomes=[o.code for o in artifact.known_outcomes],
+        outputs={o.name: o.type for o in artifact.outputs},
+    )
+    return result
+
+
+def _echo_discovery(result: dict) -> None:
+    click.echo(f"\nDiscovery status : {result['trace_status']}")
+    click.echo(f"Steps            : {result['steps']} ({result['llm_calls']} LLM calls)")
+    click.echo(f"Report           : {result['report']}")
+
+    if result["status"] != "success":
+        click.echo(f"Stop reason      : {result['message']}")
+        click.echo("\nNo artifact saved — the run did not complete.")
+        return
+
+    click.echo(f"Artifact         : {result['artifact']} (v{result['version']}, {result['risk_class']})")
+    click.echo(f"Parameters       : {result['input_params'] or 'none'}")
     click.echo(
-        f"Known outcomes   : {[o.code for o in artifact.known_outcomes] or 'none yet — '}"
-        + ("" if artifact.known_outcomes else "the KB has not been taught any for this app")
+        f"Known outcomes   : {result['known_outcomes'] or 'none yet — '}"
+        + ("" if result["known_outcomes"] else "the KB has not been taught any for this app")
     )
 
 
@@ -189,24 +268,61 @@ def _establish(store, surface, capability_ids, values) -> str | None:
 @click.pass_context
 def replay(ctx, capability, target, params, artifact_file, no_escalation):
     """Execute a known capability deterministically — no LLM in this path."""
+    result = _run_replay(
+        capability_id=capability,
+        target=target,
+        params=_parse_params(params),
+        artifact_file=artifact_file,
+        headless=ctx.obj["headless"],
+        escalation_enabled=not no_escalation,
+    )
+    _echo_replay(result)
+    raise SystemExit(0 if result["status"] == "success" else 2)
+
+
+def _run_replay(
+    *,
+    capability_id: str,
+    target: str,
+    params: dict[str, str],
+    artifact_file: str | None = None,
+    headless: bool = False,
+    escalation_enabled: bool = True,
+    drop_unknown_params: bool = False,
+) -> dict:
+    """One replay run, in process. Counterpart to `_run_discovery`.
+
+    `drop_unknown_params` exists for the intent planner and is off for the command. A
+    human who passes a parameter a capability does not declare has made a mistake worth
+    hearing about; a plan, by contrast, carries every value the operator mentioned in
+    one sentence and hands the same bag to each call in turn, so the lookup receiving a
+    `password` it has no use for is the normal case rather than an error. What each
+    capability accepts is still read from the artifact — including the parameters its
+    prerequisites declare, which is how a login inside a `requires` chain gets its
+    credentials without the calling capability declaring them.
+    """
     store = ArtifactStore()
     if artifact_file:
         artifact = Artifact.model_validate(json.loads(Path(artifact_file).read_text()))
     else:
         try:
-            artifact = store.load(capability)
+            artifact = store.load(capability_id)
         except FileNotFoundError as exc:
             raise click.ClickException(str(exc)) from exc
 
-    parsed = _parse_params(params)
+    if drop_unknown_params:
+        accepted = _accepted_params(store, artifact)
+        dropped = sorted(set(params) - accepted)
+        if dropped:
+            # Names only: a dropped value may well be the password.
+            log.info("%s does not take %s; not passing it", artifact.capability_id, dropped)
+        params = {k: v for k, v in params.items() if k in accepted}
 
-    with PlaywrightSurface(
-        base_url=target, headless=ctx.obj["headless"] or None
-    ) as surface:
+    with PlaywrightSurface(base_url=target, headless=headless or None) as surface:
         escalation = (
-            None
-            if no_escalation
-            else EscalationService(interactive=sys.stdin.isatty(), surface=surface)
+            EscalationService(interactive=sys.stdin.isatty(), surface=surface)
+            if escalation_enabled
+            else None
         )
         engine = ReplayEngine(
             surface=surface,
@@ -215,17 +331,119 @@ def replay(ctx, capability, target, params, artifact_file, no_escalation):
             report_generator=ReportGenerator(),
             store=store,
         )
-        result = engine.run(artifact, parsed)
+        result = engine.run(artifact, params)
 
-    click.echo(f"\nStatus  : {result.status}")
-    if result.outcome_code:
-        click.echo(f"Outcome : {result.outcome_code}")
-    if result.outputs:
-        click.echo(f"Outputs : {json.dumps(result.outputs)}")
-    if result.message:
-        click.echo(f"Detail  : {result.message}")
-    click.echo(f"Report  : evidence/replay_runs/{result.run_id}/report.md")
-    raise SystemExit(0 if result.status == "success" else 2)
+    return {
+        "kind": "replay",
+        "capability_id": artifact.capability_id,
+        "status": result.status,
+        "outcome_code": result.outcome_code,
+        "outputs": result.outputs,
+        "message": result.message,
+        "run_id": result.run_id,
+        "report": f"evidence/replay_runs/{result.run_id}/report.md",
+    }
+
+
+def _accepted_params(store: ArtifactStore, artifact: Artifact) -> set[str]:
+    """Parameter names this artifact or any capability it requires declares."""
+    names = {p.name for p in artifact.input_params}
+    for required in artifact.requires:
+        prerequisite = store.get_latest(required)
+        if prerequisite is not None:
+            names |= _accepted_params(store, prerequisite)
+    return names
+
+
+def _echo_replay(result: dict) -> None:
+    click.echo(f"\nStatus  : {result['status']}")
+    if result["outcome_code"]:
+        click.echo(f"Outcome : {result['outcome_code']}")
+    if result["outputs"]:
+        click.echo(f"Outputs : {json.dumps(result['outputs'])}")
+    if result["message"]:
+        click.echo(f"Detail  : {result['message']}")
+    click.echo(f"Report  : {result['report']}")
+
+
+@cli.command("run")
+@click.option("--prompt", required=True,
+              help="What you want done, in plain language. The plan is shown before anything runs.")
+@click.option("--target", envvar="ENGINE_TARGET", required=True,
+              help="Entry-point URL of the deployment to run against. [env: ENGINE_TARGET]")
+@click.option("--app-id", default=None, help="Groups runs that share a Knowledge Base [default: the target host].")
+@click.option("--yes", is_flag=True, help="Execute without asking. For scripted and CI use.")
+@click.option("--dry-run", is_flag=True, help="Print the plan and stop. Never opens a browser.")
+@click.option("--max-steps", default=25, show_default=True, help="Per discovery call.")
+@click.option("--timeout", default=180, show_default=True, help="Wall-clock budget per discovery call, seconds.")
+@click.option("--no-escalation", is_flag=True, help="Halt on risky actions instead of pausing for a human.")
+@click.pass_context
+def run(ctx, prompt, target, app_id, yes, dry_run, max_steps, timeout, no_escalation):
+    """Do what a plain-language goal asks, planning the capabilities it needs.
+
+    The layer the other commands were always underneath. One model call turns the goal
+    into an ordered plan — which capabilities, in what order, replaying what is already
+    recorded and discovering only what is not — and the plan is printed and confirmed
+    before a browser opens. Nothing here decides how to drive the application; that is
+    still the Discovery Engine's job, and a capability it already recorded is still
+    replayed with no model in the loop.
+    """
+    try:
+        llm = GeminiClient()
+    except LLMError as exc:
+        raise click.ClickException(str(exc)) from exc
+
+    store = ArtifactStore()
+    catalog = store.list_capabilities()
+
+    try:
+        calls = parse_intent(prompt, catalog, llm)
+    except (IntentParseError, LLMError) as exc:
+        raise click.ClickException(f"could not turn that into a plan: {exc}") from exc
+
+    # What is actually on disk decides replay vs discover, so say so before asking.
+    reconcile_with_store(calls, store)
+
+    click.echo(f"\nPlan ({len(calls)} call{'s' if len(calls) != 1 else ''}) against {target}:")
+    click.echo(format_plan_for_confirmation(calls))
+
+    if dry_run:
+        return
+    if not yes and not click.confirm("\nProceed?", default=False):
+        click.echo("Nothing ran.")
+        return
+
+    discover_fn = functools.partial(
+        _run_discovery,
+        app_id=app_id,
+        max_steps=max_steps,
+        timeout=timeout,
+        headless=ctx.obj["headless"],
+        policy_path=ctx.obj["policy_path"],
+        escalation_enabled=not no_escalation,
+    )
+    replay_fn = functools.partial(
+        _run_replay,
+        headless=ctx.obj["headless"],
+        escalation_enabled=not no_escalation,
+        drop_unknown_params=True,
+    )
+
+    results = execute_plan(calls, target, store, discover_fn, replay_fn)
+
+    click.echo("\n" + "-" * 60)
+    for call, result in zip(calls, results):
+        click.echo(f"\n{call.capability_id}: {result['status']}")
+        if result.get("outputs"):
+            click.echo(f"  outputs : {json.dumps(result['outputs'])}")
+        if result.get("outcome_code"):
+            click.echo(f"  outcome : {result['outcome_code']}")
+        if result.get("message"):
+            click.echo(f"  detail  : {result['message']}")
+        if result.get("report"):
+            click.echo(f"  report  : {result['report']}")
+
+    raise SystemExit(0 if all(r["status"] == "success" for r in results) else 2)
 
 
 @cli.command("learn-outcome")
