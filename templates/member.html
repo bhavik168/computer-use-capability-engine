@@ -1,0 +1,69 @@
+{% extends "layout.html" %}
+{% block content %}
+
+<h2>Member Record &mdash; {{ customer.name }} ({{ customer.customer_id }})</h2>
+<font size="1">Status: {{ customer.status|upper }}</font>
+<br><br>
+
+<table border="0" cellpadding="0" cellspacing="0" width="100%">
+<tr>
+  <td width="110" align="center" bgcolor="{% if tab == 'profile' %}#ffffff{% else %}#c8c8c8{% endif %}" style="border:1px solid #808080;">
+    <table border="0" cellpadding="5" cellspacing="0"><tr><td>
+    {% if tab == 'profile' %}<b>Profile</b>{% else %}<a href="/members/{{ customer.customer_id }}?tab=profile">Profile</a>{% endif %}
+    </td></tr></table>
+  </td>
+  <td width="110" align="center" bgcolor="{% if tab == 'account' %}#ffffff{% else %}#c8c8c8{% endif %}" style="border:1px solid #808080;">
+    <table border="0" cellpadding="5" cellspacing="0"><tr><td>
+    {% if tab == 'account' %}<b>Account</b>{% else %}<a href="/members/{{ customer.customer_id }}?tab=account">Account</a>{% endif %}
+    </td></tr></table>
+  </td>
+  <td width="110" align="center" bgcolor="{% if tab == 'transfer' %}#ffffff{% else %}#c8c8c8{% endif %}" style="border:1px solid #808080;">
+    <table border="0" cellpadding="5" cellspacing="0"><tr><td>
+    {% if tab == 'transfer' %}<b>Transfer</b>{% else %}<a href="/members/{{ customer.customer_id }}?tab=transfer">Transfer</a>{% endif %}
+    </td></tr></table>
+  </td>
+  <td>&nbsp;</td>
+</tr>
+</table>
+
+<table border="1" cellpadding="14" cellspacing="0" bgcolor="#ffffff" width="100%">
+<tr><td>
+
+{% if tab == 'profile' %}
+  <b>Profile Details</b><br><br>
+  <table border="1" cellpadding="6" cellspacing="0" width="520">
+  <tr><td bgcolor="#e8e8e8" width="160">Name</td><td>{{ customer.name }}</td></tr>
+  <tr><td bgcolor="#e8e8e8">Email Address</td><td>{{ customer.email }}</td></tr>
+  <tr><td bgcolor="#e8e8e8">Telephone</td><td>{{ customer.phone }}</td></tr>
+  <tr><td bgcolor="#e8e8e8">Customer ID</td><td>{{ customer.customer_id }}</td></tr>
+  <tr><td bgcolor="#e8e8e8">Account Status</td><td>{{ customer.status }}</td></tr>
+  </table>
+
+{% elif tab == 'account' %}
+  <b>Balance Summary</b><br>
+  <font size="1">Balances are served from the core ledger subsystem.</font><br><br>
+  <iframe src="/members/{{ customer.customer_id }}/balance-frame"
+          width="540" height="180" frameborder="1" scrolling="auto"
+          title="Balance Summary">
+    Your browser does not support frames. Balance summary unavailable.
+  </iframe>
+
+{% else %}
+  <b>Funds Transfer</b><br><br>
+  <table border="0" cellpadding="0" cellspacing="0" width="520">
+  <tr><td>
+    Initiate an outgoing transfer from this member's savings account to an
+    external target account. Transfers require confirmation before they are posted.
+    <br><br>
+    <a href="/members/{{ customer.customer_id }}/transfer">Start a Funds Transfer</a>
+  </td></tr>
+  </table>
+{% endif %}
+
+</td></tr>
+</table>
+
+<br>
+<a href="/search">Return to Member Search</a>
+
+{% endblock %}

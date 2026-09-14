@@ -1,0 +1,32 @@
+{% extends "layout.html" %}
+{% block content %}
+
+<h2>Member Search</h2>
+<font size="1">Enter the Customer ID supplied by the member to retrieve their servicing record.</font>
+<br><br>
+
+{% if message %}
+<table border="1" cellpadding="6" cellspacing="0" width="520"
+       bgcolor="{% if message_kind == 'error' %}#ffe0e0{% else %}#fff8d0{% endif %}">
+<tr><td><font color="{% if message_kind == 'error' %}#800000{% else %}#806000{% endif %}"><b>{{ message }}</b></font></td></tr>
+</table>
+<br>
+{% endif %}
+
+<form method="POST" action="/search">
+<table border="1" cellpadding="8" cellspacing="0" bgcolor="#ffffff" width="520">
+<tr>
+  <td bgcolor="#e8e8e8" width="150"><label for="f1">Customer ID</label></td>
+  <td><input type="text" id="f1" name="customer_id" size="22" value="{{ customer_id }}"></td>
+</tr>
+<tr>
+  <td bgcolor="#e8e8e8">&nbsp;</td>
+  <td><input type="submit" value="Search"></td>
+</tr>
+</table>
+</form>
+
+<br>
+<font size="1">Lookup is by exact Customer ID only. Partial name search is not available on this release.</font>
+
+{% endblock %}

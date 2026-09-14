@@ -1,0 +1,39 @@
+{% extends "layout.html" %}
+{% block content %}
+
+<h2>Funds Transfer &mdash; {{ customer.name }} ({{ customer.customer_id }})</h2>
+<font size="1">Step 1 of 2: enter the transfer instruction.</font>
+<br><br>
+
+{% if error %}
+<table border="1" cellpadding="6" cellspacing="0" bgcolor="#ffe0e0" width="520">
+<tr><td><font color="#800000"><b>{{ error }}</b></font></td></tr>
+</table>
+<br>
+{% endif %}
+
+<form method="POST" action="/members/{{ customer.customer_id }}/transfer">
+<table border="1" cellpadding="8" cellspacing="0" bgcolor="#ffffff" width="520">
+<tr>
+  <td bgcolor="#e8e8e8" width="190">Source Account</td>
+  <td>Savings &mdash; available {{ customer.savings_balance|money }} USD</td>
+</tr>
+<tr>
+  <td bgcolor="#e8e8e8"><label for="f1">Amount (USD)</label></td>
+  <td><input type="text" id="f1" name="amount" size="18" value="{{ amount }}"></td>
+</tr>
+<tr>
+  <td bgcolor="#e8e8e8"><label for="f2">Target Account Number</label></td>
+  <td><input type="text" id="f2" name="target_account" size="26" value="{{ target_account }}"></td>
+</tr>
+<tr>
+  <td bgcolor="#e8e8e8">&nbsp;</td>
+  <td><input type="submit" value="Review Transfer"></td>
+</tr>
+</table>
+</form>
+
+<br>
+<a href="/members/{{ customer.customer_id }}?tab=transfer">Cancel and return to member record</a>
+
+{% endblock %}
