@@ -1,0 +1,44 @@
+# Default safety policy. Application-agnostic on purpose.
+#
+# Nothing here names a screen, a route, a field or a product. These are properties of
+# *English interface vocabulary*, not of any one application: a banking console, a claims
+# system and a hospital admin tool all label the irreversible button "Confirm", "Submit",
+# "Delete" or "Approve". That makes the list portable in a way an app-specific one is not.
+#
+# Limits, stated plainly: this is name-based and English-only. It will miss an irreversible
+# control labelled with an icon, a localised string, or a euphemism ("Proceed", "Finish"),
+# and it will over-trigger on a harmless "Submit search". Over-triggering costs a pause and
+# a human keystroke; under-triggering costs an unintended write, so the list leans long.
+# An operator narrows or widens it per deployment with --policy.
+
+# Substring match, case-insensitive, against a control's accessible name.
+risky_action_names:
+  - confirm
+  - submit
+  - delete
+  - remove
+  - approve
+  - authorize
+  - authorise
+  - transfer
+  - pay
+  - send
+  - post
+  - issue
+  - cancel
+  - close
+  - terminate
+  - overwrite
+  - purge
+
+# Names that look risky by the list above but are routine navigation. Checked first.
+safe_action_names:
+  - submit search
+  - submit query
+  - cancel and return
+  - close window
+
+# Extra hosts the agent may visit beyond the one it was pointed at. The target's own host is
+# always allowed; everything else must be named here. Empty means "the target host only",
+# which is the right default for a system whose whole job is to stay inside one application.
+additional_allowed_domains: []

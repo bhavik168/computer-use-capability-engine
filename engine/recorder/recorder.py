@@ -1,0 +1,272 @@
+"""Compiles a successful discovery trace into a reusable capability.
+
+This is the moment a one-off, model-driven run becomes something a production agent can
+invoke for a page load's worth of cost. It is intentionally thin — the hard work happened
+during discovery; this reshapes and persists it.
+"""
+
+from __future__ import annotations
+
+import logging
+import re
+from datetime import datetime, timezone
+from urllib.parse import urlparse
+
+from engine.discovery.trace import DiscoveryTrace, TraceStep
+from engine.schema.artifact import (
+    Artifact,
+    Checkpoint,
+    ElementTarget,
+    InputParam,
+    KnownOutcome,
+    Locator,
+    Output,
+    Provenance,
+    Step,
+    TargetApp,
+    UrlTarget,
+)
+
+log = logging.getLogger(__name__)
+
+class Recorder:
+    def __init__(self, knowledge_base=None) -> None:
+        # The recorder knows nothing about any application, and nothing is declared to it.
+        # A discovery run only walks the success path — by definition it stops when the goal
+        # is met — so it cannot observe an application's failure modes. Those are *learned*:
+        # a replay meets something it was not recorded to handle, a human names it, and the
+        # Knowledge Base remembers it for that application. A capability recorded on a
+        # cold KB therefore starts with no known outcomes and treats the first "not found"
+        # it ever meets as a hard failure. That is correct, not a gap — the system has
+        # genuinely never seen one — and it is how the KB fills up, one outcome at a time.
+        self.knowledge_base = knowledge_base
+
+    def compile(
+        self,
+        trace: DiscoveryTrace,
+        capability_id: str,
+        description: str,
+        param_overrides: dict[str, str] | None = None,
+        secret_params: set[str] | None = None,
+        requires: list[str] | None = None,
+        version: str = "1.0.0",
+    ) -> Artifact:
+        if trace.status != "completed":
+            raise ValueError(
+                f"refusing to compile trace {trace.run_id}: status is {trace.status!r}, "
+                "not 'completed'"
+            )
+
+        # The run's opening navigation happens before the loop and so is not a trace step,
+        # but a replay has to start somewhere — without this the artifact opens on a blank
+        # page and fails on its first locator. Recorded as a relative path so the same
+        # capability replays against any deployment of the application.
+        steps: list[Step] = [
+            Step(
+                step_id="s0",
+                action="navigate",
+                target=UrlTarget(kind="url", value=_relative(trace.target_url)),
+                description=f"Open the capability's entry point, {_relative(trace.target_url)}",
+            )
+        ]
+        params: dict[str, InputParam] = {}
+        outputs: list[Output] = []
+        last_extract: TraceStep | None = None
+
+        for trace_step in trace.steps:
+            if not trace_step.verified:
+                continue  # a step that changed nothing is not part of the path
+
+            if trace_step.action == "navigate":
+                steps.append(
+                    Step(
+                        step_id=trace_step.step_id,
+                        action="navigate",
+                        target=UrlTarget(kind="url", value=_relative(trace_step.url_value)),
+                        description=trace_step.description,
+                    )
+                )
+                continue
+
+            locator = trace_step.locator or self._fallback_locator(trace_step)
+            if locator is None:
+                log.warning("skipping step %s: no usable locator", trace_step.step_id)
+                continue
+
+            target = ElementTarget(
+                # Backfilled by the Knowledge Base once it owns the element registry.
+                kb_element_id=None,
+                locator=Locator.model_validate(locator),
+            )
+
+            if trace_step.action == "type":
+                param_name = self._param_name(trace_step, param_overrides)
+                is_secret = param_name in (secret_params or set())
+                params.setdefault(
+                    param_name,
+                    InputParam(
+                        name=param_name,
+                        type="string",
+                        required=True,
+                        description=f"Value for the {trace_step.element_name!r} field",
+                        # A secret carries no example, by schema rule. For anything else the
+                        # discovery value is a genuinely useful hint to a calling agent.
+                        example=None if is_secret else self._example(trace_step),
+                        secret=is_secret,
+                    ),
+                )
+                steps.append(
+                    Step(
+                        step_id=trace_step.step_id,
+                        action="type",
+                        target=target,
+                        value_from_param=param_name,
+                        risk_class=trace_step.risk_class,
+                        description=trace_step.description,
+                    )
+                )
+                continue
+
+            steps.append(
+                Step(
+                    step_id=trace_step.step_id,
+                    action=trace_step.action,
+                    target=target,
+                    risk_class=trace_step.risk_class,
+                    description=trace_step.description,
+                )
+            )
+            if trace_step.action == "extract":
+                last_extract = trace_step
+
+        if last_extract is not None:
+            outputs.append(
+                Output(
+                    name=self._output_name(trace, last_extract),
+                    type="currency" if _looks_like_money(last_extract.extracted_value) else "string",
+                    source_step=last_extract.step_id,
+                )
+            )
+
+        artifact = Artifact(
+            capability_id=capability_id,
+            version=version,
+            status="draft",
+            description=description,
+            target_app=TargetApp(app_id=trace.app_id, surface_type="web"),
+            requires=list(requires or []),
+            provenance=Provenance(
+                created_from_run=trace.run_id,
+                created_at=datetime.now(timezone.utc).isoformat(),
+                last_validated_at=None,
+                confidence=self._confidence(trace),
+            ),
+            input_params=list(params.values()),
+            steps=steps,
+            checkpoint=self._checkpoint(trace, last_extract),
+            outputs=outputs,
+            known_outcomes=[
+                KnownOutcome.model_validate(entry)
+                for entry in (
+                    self.knowledge_base.outcomes(trace.app_id) if self.knowledge_base else []
+                )
+            ],
+        )
+        return artifact
+
+    # ------------------------------------------------------------------ pieces
+
+    def _checkpoint(self, trace: DiscoveryTrace, last_extract: TraceStep | None) -> Checkpoint:
+        """The goal condition, taken from whatever ended the discovery loop.
+
+        When the run finished by reading a value, the checkpoint is that the same element
+        still holds a value of that shape — which is a real assertion about a future run,
+        not a recording of this run's answer. Otherwise it falls back to the evidence text
+        the model quoted when it declared the goal met.
+        """
+        if last_extract is not None and last_extract.locator:
+            return Checkpoint(
+                type="element_present_with_pattern",
+                target=ElementTarget(
+                    kb_element_id=None, locator=Locator.model_validate(last_extract.locator)
+                ),
+                pattern=_pattern_for(last_extract.extracted_value),
+            )
+        evidence = (trace.goal_evidence or "").strip()
+        if evidence:
+            return Checkpoint(type="text_contains", text=evidence[:80])
+        return Checkpoint(type="url_contains", text=_relative(trace.final_url))
+
+    PLACEHOLDER = re.compile(r"^\{\{(\w+)\}\}$")
+
+    def _param_name(self, step: TraceStep, overrides: dict[str, str] | None) -> str:
+        """Name the parameter a typed value came from.
+
+        When the caller supplied the value, the trace holds the placeholder the model typed
+        (`{{member_id}}`) rather than the value itself, so the mapping is exact and needs no
+        guessing. Only a value the model composed for itself falls back to a heuristic —
+        naming the parameter after the field's accessible name — and even then it becomes a
+        parameter rather than a literal, because a typed value in a business application is
+        the caller's data far more often than it is a fixed UI constant, and a wrong call
+        here costs one edit rather than a silently hard-coded artifact.
+        """
+        if overrides and step.step_id in overrides:
+            return overrides[step.step_id]
+        match = self.PLACEHOLDER.match((step.typed_value or "").strip())
+        if match:
+            return match.group(1)
+        return _slug(step.element_name or step.step_id)
+
+    @staticmethod
+    def _example(step: TraceStep) -> str | None:
+        value = (step.typed_value or "").strip()
+        return None if Recorder.PLACEHOLDER.match(value) else (value or None)
+
+    def _output_name(self, trace: DiscoveryTrace, step: TraceStep) -> str:
+        name = _slug(step.element_name or "")
+        if not name or name[0].isdigit() or _looks_like_money(step.element_name):
+            return "result"
+        return name
+
+    def _fallback_locator(self, step: TraceStep) -> dict | None:
+        value = step.locator_value()
+        if not value:
+            return None
+        return {"primary": {"strategy": "role+name", "value": value}, "fallbacks": []}
+
+    @staticmethod
+    def _confidence(trace: DiscoveryTrace) -> float:
+        steps = [step for step in trace.steps if step.verified]
+        if not steps:
+            return 0.0
+        confidence = 1.0
+        if any(not step.verified for step in trace.steps):
+            confidence -= 0.2
+        if trace.llm_calls > len(steps) * 1.5:
+            confidence -= 0.2  # noisy grounding: many calls per executed step
+        return round(max(confidence, 0.1), 2)
+
+
+# ---------------------------------------------------------------------- helpers
+
+
+def _relative(url: str | None) -> str:
+    if not url:
+        return "/"
+    parsed = urlparse(url)
+    return (parsed.path or "/") + (f"?{parsed.query}" if parsed.query else "")
+
+
+def _slug(text: str) -> str:
+    slug = re.sub(r"[^a-z0-9]+", "_", text.lower()).strip("_")
+    return slug or "value"
+
+
+def _looks_like_money(value: str | None) -> bool:
+    return bool(value and re.match(r"^[$€£]?[\d,]+\.\d{2}$", value.strip()))
+
+
+def _pattern_for(value: str | None) -> str:
+    if _looks_like_money(value):
+        return r"^[$€£]?[0-9,]+\.[0-9]{2}$"
+    return r"\S"
