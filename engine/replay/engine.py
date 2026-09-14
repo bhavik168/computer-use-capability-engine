@@ -68,16 +68,11 @@ class ReplayEngine:
                 self.report_generator.generate_for_replay(result, artifact)
             return result
 
-        prerequisite_error = self._run_prerequisites(artifact, params, steps)
-        if prerequisite_error:
-            return finish(
-                RunResult(
-                    status="hard_failure",
-                    outcome_code="prerequisite_failed",
-                    message=prerequisite_error,
-                )
-            )
-
+        # Validated before prerequisites run, not after: a prerequisite is itself a live
+        # replay that signs on and drives the real UI, so validating second means a bad
+        # call still touches the application before being rejected. Validation is pure —
+        # it only loads prerequisite artifacts to learn their parameter names — so it is
+        # safe to do first, and a rejected call now leaves the surface untouched.
         param_error = self._validate_params(artifact, params)
         if param_error:
             return finish(
@@ -85,6 +80,16 @@ class ReplayEngine:
                     status="hard_failure",
                     outcome_code="invalid_params",
                     message=param_error,
+                )
+            )
+
+        prerequisite_error = self._run_prerequisites(artifact, params, steps)
+        if prerequisite_error:
+            return finish(
+                RunResult(
+                    status="hard_failure",
+                    outcome_code="prerequisite_failed",
+                    message=prerequisite_error,
                 )
             )
 
