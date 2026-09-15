@@ -1,0 +1,9 @@
+{% extends "layout.html" %}
+{% block title %}Access Restricted{% endblock %}
+{% block content %}
+<h3>Access Restricted</h3>
+<table class="banner deny"><tr><td>
+<b>Permission Denied.</b> Member {{ member_id }} is flagged as restricted access. You are not authorized to view this record.
+</td></tr></table>
+<p><a href="{{ url_for('member_search') }}">Back to Member Search</a></p>
+{% endblock %}

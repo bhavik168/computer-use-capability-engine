@@ -1,0 +1,9 @@
+{% extends "layout.html" %}
+{% block title %}Session Expired{% endblock %}
+{% block content %}
+<h3>Session Expired</h3>
+<table class="banner notice"><tr><td>
+Your session has expired due to inactivity. Please log in again.
+</td></tr></table>
+<p><a href="{{ url_for('login') }}">Return to Login</a></p>
+{% endblock %}

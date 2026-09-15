@@ -1,0 +1,9 @@
+{% extends "layout.html" %}
+{% block title %}Member Not Found{% endblock %}
+{% block content %}
+<h3>Member Not Found</h3>
+<table class="banner notice"><tr><td>
+Member not found. This is a normal result, not an error.
+</td></tr></table>
+<p><a href="{{ url_for('member_search') }}">Back to Member Search</a></p>
+{% endblock %}

@@ -1,0 +1,12 @@
+{% extends "layout.html" %}
+{% block title %}Sub-Account Confirmation{% endblock %}
+{% block content %}
+<h3>Sub-Account Created &mdash; Confirmation</h3>
+<table class="banner ok"><tr><td>Sub-account successfully created.</td></tr></table>
+<table class="grid">
+<tr><td><b>Sub-Account ID</b></td><td>{{ sub.id }}</td></tr>
+<tr><td><b>Purpose</b></td><td>{{ sub.purpose }}</td></tr>
+<tr><td><b>Initial Deposit</b></td><td>{{ sub.balance|money }}</td></tr>
+</table>
+<p><a href="{{ url_for('account_detail', account_id=account_id) }}">Back to Account</a></p>
+{% endblock %}

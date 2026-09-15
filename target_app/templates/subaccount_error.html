@@ -1,0 +1,7 @@
+{% extends "layout.html" %}
+{% block title %}Sub-Account Error{% endblock %}
+{% block content %}
+<h3>Open Sub-Account &mdash; Error</h3>
+<p class="err">{{ error }}</p>
+<p><a href="{{ url_for('account_detail', account_id=account_id) }}">Back to Account</a></p>
+{% endblock %}

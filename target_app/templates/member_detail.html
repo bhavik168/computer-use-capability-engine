@@ -1,0 +1,25 @@
+{% extends "layout.html" %}
+{% block title %}Member {{ member.id }}{% endblock %}
+{% block content %}
+<h3>Member Detail &mdash; {{ member.name }} ({{ member.id }})</h3>
+<table class="grid">
+<tr><td><b>Date of Birth</b></td><td>{{ member.dob }}</td></tr>
+<tr><td><b>SSN</b></td><td>***-**-{{ member.ssn[-4:] }}</td></tr>
+<tr><td><b>Address</b></td><td>{{ member.address }}</td></tr>
+<tr><td><b>Phone</b></td><td>{{ member.phone }}</td></tr>
+</table>
+<p><a href="{{ url_for('edit_member', member_id=member.id) }}">Edit Contact Info</a></p>
+<h4>Linked Accounts</h4>
+<table class="grid">
+<tr><th>Account ID</th><th>Type</th><th>Balance</th></tr>
+{% for a in accounts %}
+<tr>
+  <td><a href="{{ url_for('account_detail', account_id=a.id) }}">{{ a.id }}</a></td>
+  <td>{{ a.type|title }}</td>
+  <td>{{ a.balance|money }}</td>
+</tr>
+{% else %}
+<tr><td colspan="3">No linked accounts</td></tr>
+{% endfor %}
+</table>
+{% endblock %}

@@ -1,38 +1,14 @@
 {% extends "layout.html" %}
+{% block title %}Login{% endblock %}
 {% block content %}
-
-<table width="100%" border="0" cellpadding="0" cellspacing="0">
-<tr>
-  <td>
-    <h2>Operator Sign-On</h2>
-    <font size="1">Authorised personnel only. All activity on this terminal is logged.</font>
-    <br><br>
-
-    {% if error %}
-    <table border="1" cellpadding="6" cellspacing="0" bgcolor="#ffe0e0" width="420">
-    <tr><td><font color="#800000"><b>{{ error }}</b></font></td></tr>
-    </table>
-    <br>
-    {% endif %}
-
-    <form method="POST" action="/login">
-    <table border="1" cellpadding="8" cellspacing="0" bgcolor="#ffffff" width="420">
-    <tr>
-      <td bgcolor="#e8e8e8" width="150"><label for="f1">User ID</label></td>
-      <td><input type="text" id="f1" name="username" size="26" value="{{ username }}"></td>
-    </tr>
-    <tr>
-      <td bgcolor="#e8e8e8"><label for="f2">Password</label></td>
-      <td><input type="password" id="f2" name="password" size="26"></td>
-    </tr>
-    <tr>
-      <td bgcolor="#e8e8e8">&nbsp;</td>
-      <td><input type="submit" value="Sign On"></td>
-    </tr>
-    </table>
-    </form>
-  </td>
-</tr>
-</table>
-
+<h3>Operator Login</h3>
+{% if error %}<p class="err">{{ error }}</p>{% endif %}
+<form method="post">
+<label for="f1">Username</label>
+<input type="text" id="f1" name="username">
+<label for="f2">Password</label>
+<input type="password" id="f2" name="password">
+<p><button class="btn" type="submit">Log In</button></p>
+</form>
+<p style="color:#666666">Demo credentials: operator1 / pass123</p>
 {% endblock %}

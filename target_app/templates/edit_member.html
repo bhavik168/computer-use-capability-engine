@@ -1,0 +1,17 @@
+{% extends "layout.html" %}
+{% block title %}Edit Member{% endblock %}
+{% block content %}
+<h3>Edit Contact Info &mdash; {{ member.name }} ({{ member.id }})</h3>
+{% if error %}<p class="err">{{ error }}</p>{% endif %}
+{% if saved %}
+<table class="banner ok"><tr><td>Contact info updated successfully.</td></tr></table>
+{% endif %}
+<form method="post">
+<label for="f1">Address</label>
+<input type="text" id="f1" name="address" value="{{ member.address }}">
+<label for="f2">Phone</label>
+<input type="text" id="f2" name="phone" value="{{ member.phone }}">
+<p><button class="btn" type="submit">Save</button></p>
+</form>
+<p><a href="{{ url_for('member_detail', member_id=member.id) }}">Back to Member Detail</a></p>
+{% endblock %}
