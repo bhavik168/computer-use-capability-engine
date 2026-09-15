@@ -1,116 +1,112 @@
-# CoreBank Servicing Console
+# App 1 — Member Servicing Portal
 
-The **target application** for the computer-use automation take-home. It stands in for a
-legacy bank back-office system: server-rendered Flask + Jinja2, table-based markup, one
-`<iframe>`, and **no JSON/REST API for any banking action**. Full spec: [`TARGET_APP.md`](TARGET_APP.md).
+The baseline app: search → detail → action, with inline validation, a not-found
+outcome, a permission-denied outcome on restricted members, and a session that
+expires on inactivity.
 
-## Run it
+Server-rendered Flask + Jinja2, session-based operator sign-on, no `data-testid` or
+other automation-convenience attributes, table-based layout, no CSS framework, no
+JavaScript.
 
-```bash
-./run.sh
-```
-
-That is the whole thing. `run.sh` creates the venv if it is missing, installs
-dependencies, copies `.env.example` to `.env` on first run, frees port 5050 if a previous
-server is still holding it, and serves on http://127.0.0.1:5050. Override the port with
-`PORT=8080 ./run.sh`.
-
-Manual equivalent, if you would rather drive it yourself:
+## Run
 
 ```bash
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
-
-cp .env.example .env        # fill in MONGODB_URI + FLASK_SECRET_KEY
-python app.py               # http://127.0.0.1:5050
+./run.sh          # http://127.0.0.1:5001
 ```
 
-## Database
+`run.sh` creates `.venv` if missing, installs `requirements.txt`, copies
+`.env.example` to `.env` on first run, frees `$PORT` if something is already holding
+it, and starts the app.
 
-`MONGODB_URI` is optional. If it is unset or the server is unreachable, the app logs a
-notice and falls back to an equivalent in-process store holding the same seed data, so the
-automation target always comes up. With Mongo configured, collections are seeded on first
-run; `python seed.py` re-seeds them from scratch.
-
-**Local MongoDB (no Docker required).** `mongod` runs natively on macOS via Homebrew:
-
-```bash
-brew tap mongodb/brew
-brew trust mongodb/brew                  # Homebrew requires trusting third-party taps
-brew install mongodb-community
-brew services start mongodb-community    # launchd service on 127.0.0.1:27017
-```
-
-Then set, in `.env`:
-
-```
-MONGODB_URI=mongodb://127.0.0.1:27017/corebank
-```
-
-Service control: `brew services stop mongodb-community` /
-`brew services restart mongodb-community`. Inspect the data with
-`mongosh mongodb://127.0.0.1:27017/corebank`.
-
-**MongoDB Atlas** works identically — create a free M0 cluster and paste its
-`mongodb+srv://...` string into `MONGODB_URI` instead.
-
-## Sign-on credentials
-
-| Username | Password | Display name |
-|---|---|---|
-| `operator1` | `pass1234` | Jordan Lee (Teller) |
-| `operator2` | `pass5678` | Priya Nair (Servicing Specialist) |
-
-## Routes
-
-| Route | Method | Purpose |
-|---|---|---|
-| `/` | GET | Redirects to `/login` — the single entry point |
-| `/login` | GET, POST | Operator sign-on |
-| `/logout` | GET | Clears the session |
-| `/search` | GET, POST | Member lookup by exact Customer ID |
-| `/members/<id>?tab=profile\|account\|transfer` | GET | Tabbed member record (tabs are plain links) |
-| `/members/<id>/balance-frame` | GET | Balance table rendered inside the Account tab's iframe |
-| `/members/<id>/transfer` | GET, POST | Transfer form; POST renders the confirmation screen only |
-| `/members/<id>/transfer/confirm` | POST | Actually posts the transfer |
-| `/healthz` | GET | `200 OK` uptime check (the only non-HTML route) |
-
-## Outcome taxonomy for the automation layer
-
-| Outcome | How to trigger |
-|---|---|
-| Success (read) | Search `10001`, open the Account tab, read the iframe |
-| Success (multi-step) | Search `10001`, submit a transfer, click **Confirm Transfer** |
-| Business — not found | Search `99999` → "No member found with that ID" banner |
-| Business — permission denied | Search `10007` or `10009` → restricted banner |
-| Recoverable — session expired mid-flow | Confirm a transfer for `10003` → redirect to `/login` |
-| Hard failure — unhandled error | Submit a transfer with amount > 1,000,000 for any active customer |
-
-## Seed data
-
-10 customers (`10001`–`10010`), 2 staff users — all fabricated, all in `db.py`.
-`10007` and `10009` are restricted (null balances); `10003` carries
-`session_expires_on_confirm: true`.
-
-## Verification
+## Test
 
 ```bash
 ./test.sh
 ```
 
-Exercises all six acceptance criteria from §12 of the spec plus the auth guards, the
-transfer validation paths, and the absence of an `/api` surface. When running against
-MongoDB it re-seeds the collections first, so the run is repeatable.
+Runs `smoke_test.py` — Flask test-client acceptance checks covering every outcome in
+the taxonomy below, the unauthenticated-access guards, the inactivity timeout and every
+validation-error path. When the store is backed by MongoDB the suite re-seeds it first
+so runs are repeatable.
 
-## Deliberate design notes
+## Database
 
-- No `data-testid` and no automation-convenience `id`/`class` on interactive elements.
-  `<label for="f1">` associations use meaningless ids on purpose — the accessible name and
-  the button text are the only handles an agent gets.
-- The Account tab's balances exist **only** inside the iframe, never inline on the parent page.
-- `POST /members/<id>/transfer` never moves money; it renders a review screen. Only
-  `POST .../transfer/confirm` debits savings.
-- Transfer validation (non-numeric amount, zero/negative, missing target account,
-  insufficient funds) re-renders the form with an inline error. This is beyond the letter of
-  the spec but does not interfere with any listed outcome — normal test amounts pass through.
+`db.py` holds the canonical seed data as module-level constants and two stores with
+identical method signatures:
+
+| Store | `backend` | Notes |
+|---|---|---|
+| `MemoryStore` | `in-memory` | Process-local, no external dependency. Every accessor returns copies. |
+| `MongoStore` | `mongodb` | Reads/writes the `operators`, `members`, `accounts` and `counters` collections. |
+
+`get_store()` reads `MONGODB_URI` from the environment. If it is unset, still the
+`.env.example` placeholder, or unreachable, it prints a notice on stderr and falls back
+to `MemoryStore`. On a successful first connect to an empty database it seeds
+automatically. `seed.py` re-seeds a configured instance on demand and exits 1 with a
+clear message if `MONGODB_URI` is not set.
+
+The sub-account sequence lives in `counters` on MongoDB and on the store instance
+in memory, so generated sub-account ids stay unique either way.
+
+## Sign-on credentials
+
+| Username | Password |
+|---|---|
+| `operator1` | `pass123` |
+| `operator2` | `creditunion1` |
+
+Sessions expire after `SESSION_TIMEOUT_SECONDS` (default 90) of inactivity and redirect
+to `/session-expired`. Unauthenticated access redirects to `/login`.
+
+## Routes
+
+| Method | Route | Screen |
+|---|---|---|
+| GET | `/healthz` | Liveness probe, returns `OK` |
+| GET | `/` | Redirects to member search |
+| GET, POST | `/login` | Operator sign-on |
+| GET | `/session-expired` | Inactivity timeout screen |
+| GET | `/logout` | Clears the session |
+| GET, POST | `/members/search` | Search by member ID, name, or partial SSN |
+| GET | `/members/<member_id>` | Member detail and linked accounts |
+| GET, POST | `/members/<member_id>/edit` | Edit address and phone |
+| GET | `/accounts/<account_id>` | Account detail, sub-accounts, transaction history |
+| POST | `/accounts/<account_id>/subaccount` | Open a sub-account |
+
+## Outcome taxonomy
+
+| Outcome | How to reach it | What renders |
+|---|---|---|
+| Search hit | Search a member ID, a name fragment, or 4+ SSN characters | Results table with Active/RESTRICTED status |
+| No matching member | Search a string that matches nothing | Inline notice banner, "normal search result, not an error" |
+| Member not found | `/members/99999` | Inline notice banner |
+| Permission denied | Open member `10005` or `10010` | Red deny banner; no member data shown |
+| Account not found | `/accounts/CHK-99999` | Inline notice banner |
+| Validation error — missing contact field | Save the edit form with a blank address or phone | "Address and Phone are both required fields." |
+| Validation error — implausible phone | Save a phone containing no digits | "Phone number does not appear to be valid." |
+| Contact updated | Save a valid address and phone | Green banner, change persisted |
+| Validation error — missing purpose | Open a sub-account with a blank purpose | "Purpose is a required field." |
+| Validation error — missing deposit | Open a sub-account with a blank deposit | "Initial deposit is a required field." |
+| Validation error — non-numeric deposit | Deposit `abc` | "Initial deposit must be a valid number." |
+| Validation error — negative deposit | Deposit `-25` | "Initial deposit cannot be negative." |
+| Sub-account created | Open a sub-account with a valid purpose and deposit | Confirmation screen with the generated `SUB-…` id |
+| Session expired | Idle past `SESSION_TIMEOUT_SECONDS`, then navigate | Redirect to `/session-expired` |
+
+## Seed data
+
+- 17 members `10001` … `10017`, with full contact details and SSNs.
+- 2 restricted members — `10005` (Restricted Holdings LLC) and `10010`
+  (Second Restricted Trust): the permission-denied cases. Restricted members hold
+  no accounts.
+- 30 accounts, a `CHK-<member_id>` and a `SAV-<member_id>` per non-restricted member,
+  deterministically generated with 10–20 transactions each.
+- `SAV-10001` starts with one sub-account, `SUB-10001-01` (Holiday Fund, $340.00).
+- 2 operators.
+- A partial SSN search needs at least `MIN_SSN_QUERY_LENGTH` (4) characters.
+
+## Verification
+
+```bash
+./test.sh                                  # 39 acceptance checks
+curl -s localhost:5001/healthz             # -> OK
+```

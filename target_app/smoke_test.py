@@ -1,141 +1,226 @@
-"""End-to-end smoke test for the six acceptance criteria in TARGET_APP.md.
-
-Runs against the Flask test client (no server needed):  python smoke_test.py
 """
+Acceptance smoke tests for the Member Servicing Portal.
 
-from app import app, store
+Covers every outcome in the app's taxonomy: search hit by id, name and partial
+SSN, the no-match outcome, member and account not-found, the permission-denied
+outcome on restricted members, the contact-edit validation errors and success,
+and every sub-account validation error plus the creation confirmation. Auth
+guards and the inactivity timeout are checked too.
+"""
+import sys
+import time
+
+import app as application
+import db
 
 FAILURES = []
 
 
-def check(label, condition, detail=""):
-    status = "PASS" if condition else "FAIL"
-    print(f"[{status}] {label}" + (f" - {detail}" if detail and not condition else ""))
+def check(label, condition):
+    print(f"{'PASS' if condition else 'FAIL'}  {label}")
     if not condition:
         FAILURES.append(label)
 
 
-def sign_on(client, username="operator1", password="pass1234"):
-    return client.post(
-        "/login", data={"username": username, "password": password}
-    )
+def sign_in(client, username="operator1", password="pass123"):
+    return client.post("/login", data={"username": username, "password": password},
+                       follow_redirects=True)
+
+
+def text(response):
+    return response.get_data(as_text=True)
 
 
 def main():
-    app.config["TESTING"] = True
+    if application.store.backend == "mongodb":
+        application.store.seed()
+        print("(re-seeded MongoDB for a repeatable run)")
+    print(f"(store backend: {application.store.backend})\n")
 
-    # Balances are asserted against exact seed values, so start from a known
-    # dataset. Without this the run is not repeatable against a persistent
-    # database: each pass debits 10001 and the next one fails.
-    if store.backend == "mongodb":
-        store.seed()
-        print("(re-seeded MongoDB to the canonical dataset)\n")
+    application.app.config["TESTING"] = True
+    restricted = next(m for m in db.MEMBERS if m["restricted"])
+    plain = next(m for m in db.MEMBERS if not m["restricted"])
 
-    # 1. Root redirects to login.
-    with app.test_client() as c:
-        r = c.get("/")
-        check("1. / redirects to /login", r.status_code == 302 and "/login" in r.headers["Location"])
-
-        # Bad credentials stay on the form with an error.
-        r = c.post("/login", data={"username": "operator1", "password": "wrong"})
-        check("   bad password shows inline error", b"Sign-on failed" in r.data)
-
-        # Unauthenticated access to search bounces to login.
-        r = c.get("/search")
-        check("   /search without session redirects to /login", r.status_code == 302 and "/login" in r.headers["Location"])
-
-    # 2. Log in with a seeded staff user.
-    with app.test_client() as c:
-        r = sign_on(c)
-        check("2. login redirects to /search", r.status_code == 302 and "/search" in r.headers["Location"])
-
-        # 3. Search 10001 -> profile tab.
-        r = c.post("/search", data={"customer_id": "10001"})
-        check("3. search 10001 redirects to profile tab",
-              r.status_code == 302 and "/members/10001" in r.headers["Location"]
-              and "tab=profile" in r.headers["Location"])
-        r = c.get("/members/10001?tab=profile")
-        check("   profile shows name/email/phone/id",
-              all(s in r.data for s in [b"Alice Johnson", b"alice.johnson@example.test",
-                                        b"(555) 010-1001", b"10001"]))
-
-        # 4. Account tab renders an iframe; frame shows balances.
-        r = c.get("/members/10001?tab=account")
-        check("4. account tab contains an iframe",
-              b"<iframe" in r.data and b"/members/10001/balance-frame" in r.data)
-        check("   balances are NOT inline on the account page", b"4,210.55" not in r.data)
-        r = c.get("/members/10001/balance-frame")
-        check("   balance frame shows savings and checking",
-              b"4,210.55" in r.data and b"1,120.30" in r.data)
-
-        # 5. Transfer -> confirmation -> success.
-        r = c.get("/members/10001/transfer")
-        check("5. transfer form renders", b"Review Transfer" in r.data)
-        r = c.post("/members/10001/transfer", data={"amount": "150.00", "target_account": "998877"})
-        check("   review screen shown, nothing posted yet",
-              b"Confirm Transfer" in r.data and b"has not been posted" in r.data)
-        r = c.get("/members/10001/balance-frame")
-        check("   balance unchanged before confirm", b"4,210.55" in r.data)
-        r = c.post("/members/10001/transfer/confirm",
-                   data={"amount": "150.00", "target_account": "998877"})
-        check("   confirm posts the transfer",
-              r.status_code == 200 and b"Transfer completed successfully" in r.data)
-        check("   remaining balance is debited", b"4,060.55" in r.data)
-
-        # Validation paths on the transfer form.
-        r = c.post("/members/10002/transfer", data={"amount": "abc", "target_account": "1"})
-        check("   non-numeric amount rejected", b"as a number" in r.data)
-        r = c.post("/members/10002/transfer", data={"amount": "10", "target_account": ""})
-        check("   missing target account rejected", b"target account number" in r.data)
-        r = c.post("/members/10002/transfer", data={"amount": "999999", "target_account": "1"})
-        check("   over-balance transfer rejected", b"Insufficient funds" in r.data)
-
-        # 6a. Not found.
-        r = c.post("/search", data={"customer_id": "99999"})
-        check("6a. 99999 shows not-found banner",
-              r.status_code == 200 and b"No member found with that ID" in r.data)
-
-        # 6b. Restricted.
-        r = c.post("/search", data={"customer_id": "10007"})
-        check("6b. 10007 shows restricted banner",
-              r.status_code == 200 and b"is restricted" in r.data)
-        r = c.post("/search", data={"customer_id": "10009"})
-        check("    10009 shows restricted banner", b"is restricted" in r.data)
-        r = c.get("/members/10007?tab=profile")
-        check("    restricted member page is not reachable directly",
-              r.status_code == 302 and "/search" in r.headers["Location"])
-
-    # 6c. Session expires mid-flow for 10003.
-    with app.test_client() as c:
-        sign_on(c)
-        c.post("/search", data={"customer_id": "10003"})
-        r = c.post("/members/10003/transfer", data={"amount": "50", "target_account": "12345"})
-        check("6c. 10003 reaches the confirmation screen", b"Confirm Transfer" in r.data)
-        r = c.post("/members/10003/transfer/confirm",
-                   data={"amount": "50", "target_account": "12345"})
-        check("    confirm redirects to /login (session expired)",
-              r.status_code == 302 and "/login" in r.headers["Location"])
-        r = c.get("/search")
-        check("    session really is cleared",
-              r.status_code == 302 and "/login" in r.headers["Location"])
-
-    # Logout.
-    with app.test_client() as c:
-        sign_on(c, "operator2", "pass5678")
-        r = c.get("/logout")
-        check("7. second staff account can sign on and off",
-              r.status_code == 302 and "/login" in r.headers["Location"])
-
-    # No JSON API surface beyond healthz.
-    with app.test_client() as c:
+    # -- health and auth guards ---------------------------------------------
+    with application.app.test_client() as c:
         r = c.get("/healthz")
-        check("8. /healthz returns 200 OK", r.status_code == 200 and r.data == b"OK")
-        r = c.get("/api/customers")
-        check("   no /api routes exist", r.status_code == 404)
+        check("GET /healthz returns OK, 200", r.status_code == 200 and text(r) == "OK")
+
+    with application.app.test_client() as c:
+        for path in ("/", "/members/search", f"/members/{plain['id']}",
+                     f"/members/{plain['id']}/edit", f"/accounts/CHK-{plain['id']}"):
+            r = c.get(path)
+            if not (r.status_code == 302 and "/login" in r.headers["Location"]):
+                check(f"unauthenticated {path} redirects to /login", False)
+                break
+        else:
+            check("unauthenticated GET routes all redirect to /login", True)
+        r = c.post(f"/accounts/CHK-{plain['id']}/subaccount", data={})
+        check("unauthenticated sub-account POST redirects to /login",
+              r.status_code == 302 and "/login" in r.headers["Location"])
+
+    with application.app.test_client() as c:
+        r = c.post("/login", data={"username": "operator1", "password": "wrong"})
+        check("bad credentials show an error", "Invalid username or password" in text(r))
+        r = sign_in(c, "operator2", "creditunion1")
+        check("the second seeded operator can sign on", "Member Search" in text(r))
+
+    # -- inactivity timeout --------------------------------------------------
+    with application.app.test_client() as c:
+        sign_in(c)
+        with c.session_transaction() as s:
+            s["last_active"] = time.time() - application.SESSION_TIMEOUT_SECONDS - 1
+        r = c.get("/members/search")
+        check("an idle session redirects to /session-expired",
+              r.status_code == 302 and "/session-expired" in r.headers["Location"])
+        check("the session-expired screen explains the timeout",
+              "expired due to inactivity" in text(c.get("/session-expired")))
+
+    # -- member search -------------------------------------------------------
+    with application.app.test_client() as c:
+        sign_in(c)
+        r = c.post("/members/search", data={"query": plain["id"]})
+        check("search by member id finds the member",
+              plain["id"] in text(r) and plain["name"] in text(r))
+        r = c.post("/members/search", data={"query": plain["name"].split()[0].lower()})
+        check("search by name is case-insensitive", plain["name"] in text(r))
+        r = c.post("/members/search", data={"query": plain["ssn"][-4:]})
+        check("search by a partial SSN of 4+ characters finds the member",
+              plain["id"] in text(r))
+        r = c.post("/members/search", data={"query": "1"})
+        check("a partial SSN shorter than the minimum does not match on SSN",
+              plain["name"] not in text(r))
+        r = c.post("/members/search", data={"query": "no-such-member"})
+        check("a search with no matches shows the no-results outcome",
+              "No matching member found" in text(r)
+              and "normal search result, not an error" in text(r))
+        r = c.post("/members/search", data={"query": restricted["name"]})
+        check("a restricted member appears in results flagged RESTRICTED",
+              "RESTRICTED" in text(r))
+
+    # -- member detail, not found, permission denied -------------------------
+    with application.app.test_client() as c:
+        sign_in(c)
+        body = text(c.get(f"/members/{plain['id']}"))
+        check("member detail shows the member's contact info",
+              plain["address"] in body and plain["phone"] in body)
+        check("member detail masks the SSN",
+              f"***-**-{plain['ssn'][-4:]}" in body and plain["ssn"] not in body)
+        check("member detail lists both linked accounts",
+              f"CHK-{plain['id']}" in body and f"SAV-{plain['id']}" in body)
+
+        r = c.get("/members/99999")
+        check("unknown member shows the not-found outcome",
+              "Member not found" in text(r) and "normal result, not an error" in text(r))
+
+        r = c.get(f"/members/{restricted['id']}")
+        body = text(r)
+        check("a restricted member shows the permission-denied outcome",
+              "Permission Denied" in body and "restricted access" in body)
+        check("the permission-denied screen leaks no member data",
+              restricted["ssn"] not in body and restricted["address"] not in body)
+
+    # -- contact edit: validation and success --------------------------------
+    with application.app.test_client() as c:
+        sign_in(c)
+        target = db.MEMBERS[1]
+        r = c.post(f"/members/{target['id']}/edit",
+                   data={"address": "", "phone": "555-0000"})
+        check("editing with a blank address is a validation error",
+              "both required fields" in text(r))
+        r = c.post(f"/members/{target['id']}/edit",
+                   data={"address": "1 New St", "phone": ""})
+        check("editing with a blank phone is a validation error",
+              "both required fields" in text(r))
+        r = c.post(f"/members/{target['id']}/edit",
+                   data={"address": "1 New St", "phone": "no-digits-here"})
+        check("a phone with no digits is a validation error",
+              "does not appear to be valid" in text(r))
+        check("no failed edit was persisted",
+              application.store.find_member(target["id"])["address"]
+              == target["address"])
+
+        r = c.post(f"/members/{target['id']}/edit",
+                   data={"address": "900 Updated Ave, Springfield, IL",
+                         "phone": "555-9999"})
+        check("a valid edit reports success", "updated successfully" in text(r))
+        updated = application.store.find_member(target["id"])
+        check("the edit is persisted",
+              updated["address"] == "900 Updated Ave, Springfield, IL"
+              and updated["phone"] == "555-9999")
+
+        r = c.get("/members/99999/edit")
+        check("editing an unknown member shows the not-found outcome",
+              "Member not found" in text(r))
+
+    # -- account detail ------------------------------------------------------
+    with application.app.test_client() as c:
+        sign_in(c)
+        body = text(c.get("/accounts/SAV-10001"))
+        check("account detail shows the seeded sub-account",
+              "SUB-10001-01" in body and "Holiday Fund" in body)
+        check("account detail lists transaction history",
+              "Transaction History" in body
+              and len(application.store.find_account("SAV-10001")["transactions"]) >= 10)
+        check("account detail renders negative amounts with a leading minus",
+              "-$" in body or all(t["amount"] >= 0 for t in
+                                  application.store.find_account("SAV-10001")["transactions"]))
+        body = text(c.get(f"/accounts/CHK-{plain['id']}"))
+        check("an account with no sub-accounts shows None", ">None<" in body)
+        r = c.get("/accounts/CHK-99999")
+        check("unknown account shows the not-found outcome",
+              "Account not found" in text(r))
+
+    # -- sub-account creation: validation and success ------------------------
+    with application.app.test_client() as c:
+        sign_in(c)
+        acct = f"CHK-{plain['id']}"
+        for label, payload, expected in (
+            ("a missing purpose", {"purpose": "", "deposit": "100"},
+             "Purpose is a required field."),
+            ("a missing deposit", {"purpose": "Vacation", "deposit": ""},
+             "Initial deposit is a required field."),
+            ("a non-numeric deposit", {"purpose": "Vacation", "deposit": "abc"},
+             "must be a valid number"),
+            ("a negative deposit", {"purpose": "Vacation", "deposit": "-25"},
+             "cannot be negative"),
+        ):
+            r = c.post(f"/accounts/{acct}/subaccount", data=payload)
+            if expected not in text(r):
+                check(f"creating a sub-account with {label} is a validation error", False)
+                break
+        else:
+            check("every sub-account validation error is reported inline", True)
+
+        before = len(application.store.find_account(acct)["sub_accounts"])
+        check("no failed sub-account was created", before == 0)
+
+        r = c.post(f"/accounts/{acct}/subaccount",
+                   data={"purpose": "Holiday Fund 2027", "deposit": "250.75"})
+        body = text(r)
+        check("a valid sub-account shows the creation confirmation",
+              "successfully created" in body and "$250.75" in body
+              and "Holiday Fund 2027" in body)
+        subs = application.store.find_account(acct)["sub_accounts"]
+        check("the sub-account is persisted against the account", len(subs) == 1)
+        check("the new sub-account id is derived from the member id",
+              subs[0]["id"].startswith(f"SUB-{plain['id']}-"))
+        check("a zero deposit is accepted",
+              "successfully created" in text(
+                  c.post(f"/accounts/{acct}/subaccount",
+                         data={"purpose": "Zero Start", "deposit": "0"})))
+        check("sub-account ids stay unique",
+              len({s["id"] for s in
+                   application.store.find_account(acct)["sub_accounts"]}) == 2)
+
+        r = c.post("/accounts/CHK-99999/subaccount",
+                   data={"purpose": "X", "deposit": "1"})
+        check("creating a sub-account on an unknown account shows not-found",
+              "Account not found" in text(r))
 
     print()
     if FAILURES:
-        print(f"{len(FAILURES)} check(s) failed:")
+        print(f"{len(FAILURES)} check(s) FAILED:")
         for f in FAILURES:
             print(f"  - {f}")
         return 1
@@ -144,4 +229,4 @@ def main():
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    sys.exit(main())
