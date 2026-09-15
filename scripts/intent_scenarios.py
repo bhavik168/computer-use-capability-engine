@@ -27,7 +27,7 @@ from engine.intent import (
 )
 from engine.storage.artifact_store import ArtifactStore
 
-FIXTURES = Path("fixtures/corebank")
+ARTIFACTS = Path("data/artifacts")
 TARGET = "http://127.0.0.1:5050"
 
 GOAL = (
@@ -50,7 +50,7 @@ PLAN_JSON = json.dumps(
                 "matched_existing": True,
             },
             {
-                "capability_id": "check_savings_balance",
+                "capability_id": "lookup_member_and_get_savings_balance",
                 "description": "Read a member's savings balance.",
                 "goal": "Look up the member by id and extract the savings balance.",
                 "params": [{"name": "member_id", "value": "10001", "secret": False}],
@@ -75,7 +75,7 @@ class StubCompleter:
 
 
 def _fixture_store() -> ArtifactStore:
-    return ArtifactStore(FIXTURES)
+    return ArtifactStore(ARTIFACTS)
 
 
 def _check(label: str, condition: bool, detail: str = "") -> bool:
@@ -88,7 +88,7 @@ def offline() -> bool:
     catalog = store.list_capabilities()
     ok = _check(
         "catalog reads the fixture artifacts",
-        {c["capability_id"] for c in catalog} >= {"operator_login", "check_savings_balance"},
+        {c["capability_id"] for c in catalog} >= {"operator_login", "lookup_member_and_get_savings_balance"},
         str([c["capability_id"] for c in catalog]),
     )
 
@@ -96,9 +96,9 @@ def offline() -> bool:
     calls = parse_intent(GOAL, catalog, stub)
     reconcile_with_store(calls, store)
 
-    ok &= _check("the catalog is put in front of the model", "check_savings_balance" in (stub.seen_user or ""))
+    ok &= _check("the catalog is put in front of the model", "lookup_member_and_get_savings_balance" in (stub.seen_user or ""))
     ok &= _check("the plan is two ordered calls", [c.capability_id for c in calls] ==
-                 ["operator_login", "check_savings_balance"])
+                 ["operator_login", "lookup_member_and_get_savings_balance"])
     ok &= _check("the lookup requires the sign-on", calls[1].requires == ["operator_login"])
     ok &= _check("the password is marked secret", any(p.secret for p in calls[0].params))
     ok &= _check("both calls resolve to stored artifacts", all(c.matched_existing for c in calls))
@@ -111,7 +111,7 @@ def offline() -> bool:
     # A requirement the plan does not contain would reach the executor as a capability
     # id nobody in this plan produces; it is refused before anything opens a browser.
     dangling = json.dumps(
-        {"calls": [{"capability_id": "check_savings_balance", "description": "d", "goal": "g",
+        {"calls": [{"capability_id": "lookup_member_and_get_savings_balance", "description": "d", "goal": "g",
                     "params": [], "requires": ["operator_login"], "matched_existing": True}]}
     )
     try:
@@ -144,14 +144,14 @@ def offline() -> bool:
 
     results = execute_plan(calls, TARGET, store, fake_discover, fake_replay)
     ok &= _check("stored capabilities replay rather than rediscover",
-                 ran == ["replay:operator_login", "replay:check_savings_balance"], str(ran))
+                 ran == ["replay:operator_login", "replay:lookup_member_and_get_savings_balance"], str(ran))
     ok &= _check("a business outcome is reported as itself",
                  results[1]["status"] == "business_outcome")
     # The lookup re-establishes the session itself, so it needs the sign-on's params.
     ok &= _check("a call inherits the parameters of what it requires",
-                 seen_params["check_savings_balance"] ==
+                 seen_params["lookup_member_and_get_savings_balance"] ==
                  {"username": "operator1", "password": "pass123", "member_id": "10001"},
-                 str(seen_params["check_savings_balance"]))
+                 str(seen_params["lookup_member_and_get_savings_balance"]))
 
     # An unrecorded capability is the discovery branch, and a failure there stops the plan.
     unknown = json.loads(PLAN_JSON)

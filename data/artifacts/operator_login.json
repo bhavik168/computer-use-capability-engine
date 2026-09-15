@@ -1,0 +1,132 @@
+{
+  "capability_id": "operator_login",
+  "version": "1.0.0",
+  "status": "draft",
+  "description": "Establish an operator session.",
+  "target_app": {
+    "app_id": "127.0.0.1_5050",
+    "surface_type": "web"
+  },
+  "requires": [],
+  "risk_class": "safe",
+  "provenance": {
+    "created_from_run": "discovery_20260915T035518_65dd5f",
+    "created_at": "2026-09-15T03:55:23.829268+00:00",
+    "last_validated_at": null,
+    "confidence": 1.0
+  },
+  "input_params": [
+    {
+      "name": "username",
+      "type": "string",
+      "required": true,
+      "description": "Value for the 'Username' field",
+      "example": null,
+      "secret": false
+    },
+    {
+      "name": "password",
+      "type": "string",
+      "required": true,
+      "description": "Value for the 'Password' field",
+      "example": null,
+      "secret": true
+    }
+  ],
+  "steps": [
+    {
+      "step_id": "s0",
+      "action": "navigate",
+      "target": {
+        "kind": "url",
+        "value": "/"
+      },
+      "value_from_param": null,
+      "value": null,
+      "risk_class": "safe",
+      "description": "Open the capability's entry point, /"
+    },
+    {
+      "step_id": "s1",
+      "action": "type",
+      "target": {
+        "kb_element_id": null,
+        "locator": {
+          "primary": {
+            "strategy": "role+name",
+            "value": "textbox:Username"
+          },
+          "fallbacks": [
+            {
+              "strategy": "css",
+              "value": "body > table:nth-of-type(1) > tbody:nth-of-type(1) > tr:nth-of-type(2) > td:nth-of-type(1) > form:nth-of-type(1) > input:nth-of-type(1)"
+            }
+          ]
+        }
+      },
+      "value_from_param": "username",
+      "value": null,
+      "risk_class": "safe",
+      "description": "Typed {{username}} into textbox \"Username\""
+    },
+    {
+      "step_id": "s2",
+      "action": "type",
+      "target": {
+        "kb_element_id": null,
+        "locator": {
+          "primary": {
+            "strategy": "role+name",
+            "value": "textbox:Password"
+          },
+          "fallbacks": [
+            {
+              "strategy": "css",
+              "value": "body > table:nth-of-type(1) > tbody:nth-of-type(1) > tr:nth-of-type(2) > td:nth-of-type(1) > form:nth-of-type(1) > input:nth-of-type(2)"
+            }
+          ]
+        }
+      },
+      "value_from_param": "password",
+      "value": null,
+      "risk_class": "safe",
+      "description": "Typed {{password}} into textbox \"Password\""
+    },
+    {
+      "step_id": "s3",
+      "action": "click",
+      "target": {
+        "kb_element_id": null,
+        "locator": {
+          "primary": {
+            "strategy": "role+name",
+            "value": "button:Log In"
+          },
+          "fallbacks": [
+            {
+              "strategy": "css",
+              "value": "body > table:nth-of-type(1) > tbody:nth-of-type(1) > tr:nth-of-type(2) > td:nth-of-type(1) > form:nth-of-type(1) > p:nth-of-type(1) > button:nth-of-type(1)"
+            }
+          ]
+        }
+      },
+      "value_from_param": null,
+      "value": null,
+      "risk_class": "safe",
+      "description": "Clicked button \"Log In\""
+    }
+  ],
+  "checkpoint": {
+    "type": "url_contains",
+    "target": null,
+    "pattern": null,
+    "text": "/members/search"
+  },
+  "outputs": [],
+  "known_outcomes": [],
+  "review": {
+    "status": "not_reviewed",
+    "optimization_notes": null,
+    "reviewed_at": null
+  }
+}

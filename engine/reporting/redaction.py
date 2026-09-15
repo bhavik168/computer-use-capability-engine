@@ -42,3 +42,27 @@ def redact_text(text: str) -> str:
 def redact_screenshot(image_bytes: bytes) -> bytes:
     """Return the image as it may be persisted. Currently identity; see module docstring."""
     return image_bytes
+
+
+# A candidate detector has to be long enough to be distinctive and short enough to be a
+# message rather than a paragraph of page furniture.
+MIN_CANDIDATE = 12
+MAX_CANDIDATE = 120
+# A URL path is terse by nature; "/login" is a perfectly good detector at six characters.
+MIN_URL_CANDIDATE = 3
+_TRIM = " .,:;—-()[]{}\"'"
+
+
+def stable_fragment(text: str, minimum: int = MIN_CANDIDATE) -> str | None:
+    """The longest part of an observed string that carries no record-specific data.
+
+    Detectors match by literal substring, so a generalised string with a `{n}` placeholder
+    in it would match nothing. Redacting first and then keeping the longest placeholder-free
+    run gives a fragment that is both safe to persist and genuinely reusable: "Account 10007
+    is restricted. You do not have permission..." yields "is restricted. You do not have
+    permission...", which matches the *next* restricted member too — the one thing a detector
+    keyed to the id that failed today could never do.
+    """
+    pieces = [piece.split("}")[-1].strip(_TRIM) for piece in redact_text(text).split("{")]
+    best = max(pieces, key=len, default="")
+    return best if len(best) >= minimum else None

@@ -1,0 +1,192 @@
+{
+  "capability_id": "search_member_by_partial_ssn_and_get_account_types",
+  "version": "1.0.0",
+  "status": "draft",
+  "description": "Search members by partial SSN and return the account types held.",
+  "target_app": {
+    "app_id": "127.0.0.1_5050",
+    "surface_type": "web"
+  },
+  "requires": [
+    "operator_login"
+  ],
+  "risk_class": "safe",
+  "provenance": {
+    "created_from_run": "discovery_20260915T034904_6087c0",
+    "created_at": "2026-09-15T03:49:15.919837+00:00",
+    "last_validated_at": null,
+    "confidence": 1.0
+  },
+  "input_params": [
+    {
+      "name": "partial_ssn",
+      "type": "string",
+      "required": true,
+      "description": "Value for the 'Search by Member ID, Name, or partial SSN' field",
+      "example": null,
+      "secret": false
+    }
+  ],
+  "steps": [
+    {
+      "step_id": "s0",
+      "action": "navigate",
+      "target": {
+        "kind": "url",
+        "value": "/"
+      },
+      "value_from_param": null,
+      "value": null,
+      "risk_class": "safe",
+      "description": "Open the capability's entry point, /"
+    },
+    {
+      "step_id": "s1",
+      "action": "type",
+      "target": {
+        "kb_element_id": null,
+        "locator": {
+          "primary": {
+            "strategy": "role+name",
+            "value": "textbox:Search by Member ID, Name, or partial SSN"
+          },
+          "fallbacks": [
+            {
+              "strategy": "css",
+              "value": "body > table:nth-of-type(1) > tbody:nth-of-type(1) > tr:nth-of-type(3) > td:nth-of-type(1) > form:nth-of-type(1) > input:nth-of-type(1)"
+            }
+          ]
+        }
+      },
+      "value_from_param": "partial_ssn",
+      "value": null,
+      "risk_class": "safe",
+      "description": "Typed {{partial_ssn}} into textbox \"Search by Member ID, Name, or partial SSN\""
+    },
+    {
+      "step_id": "s2",
+      "action": "click",
+      "target": {
+        "kb_element_id": null,
+        "locator": {
+          "primary": {
+            "strategy": "role+name",
+            "value": "button:Search"
+          },
+          "fallbacks": [
+            {
+              "strategy": "css",
+              "value": "body > table:nth-of-type(1) > tbody:nth-of-type(1) > tr:nth-of-type(3) > td:nth-of-type(1) > form:nth-of-type(1) > p:nth-of-type(1) > button:nth-of-type(1)"
+            }
+          ]
+        }
+      },
+      "value_from_param": null,
+      "value": null,
+      "risk_class": "safe",
+      "description": "Clicked button \"Search\""
+    },
+    {
+      "step_id": "s3",
+      "action": "click",
+      "target": {
+        "kb_element_id": null,
+        "locator": {
+          "primary": {
+            "strategy": "role+name",
+            "value": "link:10001"
+          },
+          "fallbacks": [
+            {
+              "strategy": "css",
+              "value": "body > table:nth-of-type(1) > tbody:nth-of-type(1) > tr:nth-of-type(3) > td:nth-of-type(1) > table:nth-of-type(1) > tbody:nth-of-type(1) > tr:nth-of-type(2) > td:nth-of-type(1) > a:nth-of-type(1)"
+            }
+          ]
+        }
+      },
+      "value_from_param": null,
+      "value": null,
+      "risk_class": "safe",
+      "description": "Clicked link \"10001\""
+    },
+    {
+      "step_id": "s4",
+      "action": "extract",
+      "target": {
+        "kb_element_id": null,
+        "locator": {
+          "primary": {
+            "strategy": "role+name",
+            "value": "cell:Checking"
+          },
+          "fallbacks": [
+            {
+              "strategy": "css",
+              "value": "body > table:nth-of-type(1) > tbody:nth-of-type(1) > tr:nth-of-type(3) > td:nth-of-type(1) > table:nth-of-type(2) > tbody:nth-of-type(1) > tr:nth-of-type(2) > td:nth-of-type(2)"
+            }
+          ]
+        }
+      },
+      "value_from_param": null,
+      "value": null,
+      "risk_class": "safe",
+      "description": "Read 'Checking' from cell \"Checking\""
+    },
+    {
+      "step_id": "s5",
+      "action": "extract",
+      "target": {
+        "kb_element_id": null,
+        "locator": {
+          "primary": {
+            "strategy": "role+name",
+            "value": "cell:Savings"
+          },
+          "fallbacks": [
+            {
+              "strategy": "css",
+              "value": "body > table:nth-of-type(1) > tbody:nth-of-type(1) > tr:nth-of-type(3) > td:nth-of-type(1) > table:nth-of-type(2) > tbody:nth-of-type(1) > tr:nth-of-type(3) > td:nth-of-type(2)"
+            }
+          ]
+        }
+      },
+      "value_from_param": null,
+      "value": null,
+      "risk_class": "safe",
+      "description": "Read 'Savings' from cell \"Savings\""
+    }
+  ],
+  "checkpoint": {
+    "type": "element_present_with_pattern",
+    "target": {
+      "kb_element_id": null,
+      "locator": {
+        "primary": {
+          "strategy": "role+name",
+          "value": "cell:Savings"
+        },
+        "fallbacks": [
+          {
+            "strategy": "css",
+            "value": "body > table:nth-of-type(1) > tbody:nth-of-type(1) > tr:nth-of-type(3) > td:nth-of-type(1) > table:nth-of-type(2) > tbody:nth-of-type(1) > tr:nth-of-type(3) > td:nth-of-type(2)"
+          }
+        ]
+      }
+    },
+    "pattern": "\\S",
+    "text": null
+  },
+  "outputs": [
+    {
+      "name": "account_type_savings",
+      "type": "string",
+      "source_step": "s5"
+    }
+  ],
+  "known_outcomes": [],
+  "review": {
+    "status": "not_reviewed",
+    "optimization_notes": null,
+    "reviewed_at": null
+  }
+}

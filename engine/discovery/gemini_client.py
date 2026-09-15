@@ -120,6 +120,7 @@ class GeminiClient(LLMClient):
             element_id=args.get("element_id"),
             text=args.get("text"),
             url=args.get("url"),
+            output_name=args.get("output_name"),
             goal_reached=bool(args.get("goal_reached")),
             goal_evidence=args.get("goal_evidence"),
             raw=args,

@@ -29,6 +29,7 @@ class Decision:
     element_id: str | None = None
     text: str | None = None
     url: str | None = None
+    output_name: str | None = None
     goal_reached: bool = False
     goal_evidence: str | None = None
     raw: dict = field(default_factory=dict)

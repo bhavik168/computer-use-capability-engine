@@ -42,10 +42,12 @@ Point it at a different application, or a different domain entirely, and none of
 | `engine/` | The capability engine. **Contains no knowledge of any application.** |
 | `engine/policy/defaults.yaml` | Operator safety policy. Application-agnostic; override with `--policy`. |
 | `target_app/` | CoreBank Servicing Console — a legacy-styled Flask app used as *a* target. Swappable. |
-| `fixtures/` | Hand-written artifacts for one target, used to build and prove Replay before Discovery existed. Not discovery output. |
-| `data/` | What the system has learned: `artifacts/` (capabilities), `kb/` (screens, elements, learned outcomes), `escalations/`. Empty on a fresh checkout. |
+| `data/artifacts/` | The capability catalogue — every artifact here was produced by a real discovery run. Committed, because it is what a reviewer reads to judge the schema. |
+| `data/kb/`, `data/escalations/` | What the system has learned about an application, and open intervention requests. Machine-local; empty on a fresh checkout. |
 | `scripts/intent_scenarios.py` | Offline checks for the intent parser: plan validation, replay-vs-discover, secret redaction. No browser, no model. |
-| `evidence/` | Per-run reports with per-step screenshots, for every outcome. Empty until you run something. |
+| `scripts/replay_scenarios.py` | Every branch of the replay result contract, against a live browser. Runs hermetically. |
+| `evidence/submission/` | The committed end-to-end demonstration: discovery, replay, an error state, and an escalation. |
+| `evidence/discovery_runs/`, `evidence/replay_runs/` | Where your own runs land. Gitignored scratch; empty until you run something. |
 
 ## Setup
 
@@ -90,6 +92,28 @@ unattended runs.
 Operator credentials default to `operator1` / `pass123`; override with `COREBANK_USERNAME`
 and `COREBANK_PASSWORD`.
 
+## Run it without a model key
+
+The capability catalogue in `data/artifacts/` is committed, and every artifact in it was
+produced by a real discovery run against the app in `target_app/`. So the whole replay half of
+the system — the production path — can be exercised with no `GEMINI_API_KEY` at all:
+
+```bash
+cd target_app && ./run.sh          # terminal 1
+.venv/bin/python -m engine.cli list-artifacts
+.venv/bin/python -m engine.cli replay --capability lookup_member_and_get_savings_balance \
+    --param member_id=10001 --param username=operator1 --param password=pass123
+# → Status  : success
+# → Outputs : {"savings_balance": "$8,714.97"}
+```
+
+Change `member_id` and the answer changes with it — the recorded locator is
+`link:{{member_id}}`, not the member discovery happened to be pointed at.
+
+The committed artifacts ship **cold**: `known_outcomes` is empty, because a discovery run only
+ever walks the success path and so cannot observe how an application fails. Teaching it is
+what the demo below shows.
+
 ## Demo path
 
 ```bash
@@ -108,23 +132,23 @@ export ENGINE_TARGET=http://127.0.0.1:5050
     --goal "Look up member 10001 and read their savings balance" \
     --target $ENGINE_TARGET --requires operator_login \
     --param username=operator1 --param password=pass123 --secret password \
-    --capability-id check_savings_balance \
+    --capability-id lookup_member_and_get_savings_balance \
     --description "Look up a member by ID and read their current savings balance."
 
 # 3. Replay it — deterministic, no LLM anywhere in this path.
-.venv/bin/python -m engine.cli replay --capability check_savings_balance \
+.venv/bin/python -m engine.cli replay --capability lookup_member_and_get_savings_balance \
     --param member_id=10001 --param username=operator1 --param password=pass123
 
 # 4. A member that does not exist. On a cold system this is a HARD FAILURE — nothing has
 #    told the engine what "not found" means here — and the report suggests detectors.
-.venv/bin/python -m engine.cli replay --capability check_savings_balance \
+.venv/bin/python -m engine.cli replay --capability lookup_member_and_get_savings_balance \
     --param member_id=99999 --param username=operator1 --param password=pass123
 
 # 5. Name it once. The Knowledge Base keeps it for this application from now on.
 .venv/bin/python -m engine.cli learn-outcome --app-id 127.0.0.1_5050 \
     --code member_not_found --type business_outcome \
-    --text-contains "No member found with that ID" \
-    --capability check_savings_balance
+    --text-contains "No matching member found" \
+    --capability lookup_member_and_get_savings_balance
 
 # 6. Re-run step 4. Same input, same artifact — now a clean business outcome.
 
@@ -154,7 +178,7 @@ no LLM in the loop.
 
 Plan (2 calls) against http://127.0.0.1:5050:
 1. [REPLAY (existing)] operator_login(username=operator1, password=[REDACTED])
-2. [REPLAY (existing)] check_savings_balance(member_id=10001) [requires: operator_login]
+2. [REPLAY (existing)] lookup_member_and_get_savings_balance(member_id=10001) [requires: operator_login]
 
 Proceed? [y/N]:
 ```
@@ -171,20 +195,22 @@ Replay reports one of four statuses, and the distinction is the point:
 | Status | Meaning | Example |
 |---|---|---|
 | `success` | Every step ran and the checkpoint held. | Balance read for member `10001`. |
-| `business_outcome` | The application correctly said no. | `member_not_found` for `99999`; `permission_denied` for `10005`. |
-| `recoverable` | Something interrupted the run that a retry could survive. | `session_expired` mid-transfer for `10003`. |
-| `hard_failure` | Something the artifact was never recorded to handle. | A transfer over 1,000,000 crashes the app; no detector matches. |
+| `business_outcome` | The application correctly said no. | `member_not_found` for `99999`; `permission_denied` for restricted member `10005`. |
+| `recoverable` | Something interrupted the run that a retry could survive. | The operator session expired mid-flow. |
+| `hard_failure` | Something the artifact was never recorded to handle. | The first `99999` lookup, before anyone has named "not found". |
 
 ## Development utilities
 
 ```bash
 .venv/bin/python -m scripts.probe_models flash   # which models this key can use now
-.venv/bin/python -m engine.schema.validate fixtures/corebank/check_savings_balance.json
+.venv/bin/python -m engine.schema.validate data/artifacts/lookup_member_and_get_savings_balance.json
 ENGINE_HEADLESS=1 .venv/bin/python -m engine.surface._manual_check    # observe the live app
-ENGINE_HEADLESS=1 .venv/bin/python -m scripts.replay_scenarios        # the six replay outcomes
+ENGINE_HEADLESS=1 .venv/bin/python -m scripts.replay_scenarios        # every replay outcome class
 .venv/bin/python -m scripts.intent_scenarios           # plan parsing, offline (--live to parse for real)
 ```
 
-The two JSON files in `fixtures/corebank/` are **hand-crafted fixtures** used to build
-and prove Replay before Discovery existed — not discovery output. Genuine discovery output
-lands in `data/artifacts/`; see `fixtures/corebank/README.md`.
+`replay_scenarios` runs hermetically: it copies the artifact catalogue into a temporary store
+and uses a temporary Knowledge Base, because two of its scenarios *teach* the system an
+outcome and one bumps an artifact's version. A dev sweep must not rewrite the committed
+catalogue as a side effect of being run, and it must start from the same cold KB every time —
+otherwise the "first encounter is a hard failure" scenarios would pass only once.

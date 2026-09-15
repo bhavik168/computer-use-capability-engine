@@ -174,7 +174,9 @@ def _run_discovery(
         # Any prerequisite capability runs first, so discovery begins from the state a
         # replay of this capability would also begin from.
         if requires:
-            prerequisite_result = _establish(store, surface, list(requires), params)
+            prerequisite_result = _establish(
+                store, surface, list(requires), params, Policy(target, policy_path)
+            )
             if prerequisite_result:
                 raise click.ClickException(prerequisite_result)
 
@@ -241,8 +243,8 @@ def _echo_discovery(result: dict) -> None:
     )
 
 
-def _establish(store, surface, capability_ids, values) -> str | None:
-    engine = ReplayEngine(surface, store=store)
+def _establish(store, surface, capability_ids, values, policy=None) -> str | None:
+    engine = ReplayEngine(surface, store=store, policy=policy)
     for capability_id in capability_ids:
         try:
             artifact = store.load(capability_id)
@@ -276,6 +278,7 @@ def replay(ctx, capability, target, params, artifact_file, no_escalation):
         artifact_file=artifact_file,
         headless=ctx.obj["headless"],
         escalation_enabled=not no_escalation,
+        policy_path=ctx.obj["policy_path"],
     )
     _echo_replay(result)
     raise SystemExit(0 if result["status"] == "success" else 2)
@@ -290,6 +293,7 @@ def _run_replay(
     headless: bool = False,
     escalation_enabled: bool = True,
     drop_unknown_params: bool = False,
+    policy_path: str | None = None,
 ) -> dict:
     """One replay run, in process. Counterpart to `_run_discovery`.
 
@@ -331,6 +335,9 @@ def _run_replay(
             knowledge_base=KnowledgeBaseService(),
             report_generator=ReportGenerator(),
             store=store,
+            # Same policy object discovery uses. Replay is the unattended path, so it is
+            # the one that most needs the allowlist actually enforced.
+            policy=Policy(target, policy_path),
         )
         result = engine.run(artifact, params)
 

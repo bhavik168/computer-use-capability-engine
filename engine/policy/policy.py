@@ -27,8 +27,11 @@ RiskClass = Literal["safe", "risky"]
 
 
 class Policy:
-    def __init__(self, target_url: str, policy_path: Path | str = DEFAULT_POLICY_PATH) -> None:
-        config = yaml.safe_load(Path(policy_path).read_text()) or {}
+    def __init__(self, target_url: str, policy_path: Path | str | None = None) -> None:
+        # `None` means "the operator did not name one", which is the common case and must
+        # land on the shipped default rather than raising — a policy that is awkward to
+        # construct is a policy that call sites quietly skip.
+        config = yaml.safe_load(Path(policy_path or DEFAULT_POLICY_PATH).read_text()) or {}
         self.risky_action_names: list[str] = config.get("risky_action_names") or []
         self.safe_action_names: list[str] = config.get("safe_action_names") or []
 

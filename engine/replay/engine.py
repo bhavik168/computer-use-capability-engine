@@ -13,6 +13,7 @@ import re
 import time
 import uuid
 from datetime import datetime, timezone
+from urllib.parse import urljoin
 
 from engine.replay.result import RunResult, StepLog
 from engine.schema.artifact import Artifact, ElementTarget, Step, UrlTarget
@@ -25,8 +26,11 @@ NUMERIC_TYPES = ("number", "currency")
 
 class ReplayEngine:
     def __init__(self, surface: Surface, escalation=None, knowledge_base=None,
-                 report_generator=None, store=None) -> None:
+                 report_generator=None, store=None, policy=None) -> None:
         self.surface = surface
+        # Optional so a caller can replay without one, but the CLI always supplies it: the
+        # same policy object discovery uses, so there is one allowlist, not two.
+        self.policy = policy
         # Needed only to resolve an artifact's `requires` chain — a capability that depends
         # on another (an authenticated session, most often) replays that one first.
         self.store = store
@@ -228,6 +232,34 @@ class ReplayEngine:
 
         if step.action == "navigate":
             assert isinstance(step.target, UrlTarget)
+            # The allowlist is enforced on the production path too, not only during
+            # discovery. An artifact is data: it can be hand-edited, copied between
+            # environments, or come from another tenant's catalogue, and the URL that was
+            # checked when it was recorded is not necessarily the URL being loaded now.
+            # Checking here costs one string comparison and makes "the agent cannot act
+            # outside the allowlist" true of the mode that actually runs unattended.
+            if self.policy is not None:
+                # Resolved the same way the Surface will resolve it: against the deployment
+                # base, not the current page. Artifacts store paths rather than hosts, and
+                # at the opening step there is no current page to resolve against yet.
+                base = getattr(self.surface, "base_url", "") or self.surface.current_url() or ""
+                absolute = urljoin(base + "/", step.target.value.lstrip("/"))
+                if not self.policy.check_allowlist(absolute):
+                    return (
+                        StepLog(
+                            step_id=step.step_id,
+                            action=step.action,
+                            description=f"Blocked: {step.target.value} is outside the allowlist",
+                            url=self._safe_url(),
+                            verified=False,
+                            error=(
+                                f"Step {step.step_id}: navigation to {step.target.value!r} "
+                                "is outside the configured allowlist"
+                            ),
+                            screenshot=self._safe_screenshot(),
+                        ),
+                        None,
+                    )
             self.surface.navigate(step.target.value)
         else:
             assert isinstance(step.target, ElementTarget)

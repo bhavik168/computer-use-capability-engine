@@ -18,7 +18,7 @@ from engine.discovery import grounding
 from engine.discovery.llm_client import Decision, LLMClient, LLMError
 from engine.discovery.loop_guard import LoopGuard
 from engine.policy.policy import Policy
-from engine.discovery.trace import DiscoveryTrace, TraceStep
+from engine.discovery.trace import DiscoveryTrace, TraceStep, goal_expects_value
 from engine.surface.base import Surface, SurfaceError
 
 log = logging.getLogger(__name__)
@@ -37,11 +37,15 @@ Rules:
   every turn; never reuse an id from a previous turn.
 - If the application requires a session and you are not in one, establishing it is part of
   the goal like anything else: find the controls and use them. Never sign out.
-- Read values from the "Text and values visible on screen" section — those are not
-  clickable, so use `extract` with the element id only when you need to record a value as
-  a result of the task.
+- Entries under "Read-only text and values" carry element ids like any other. You cannot
+  click or type into them, but you can `extract` one by its id.
+- When the goal asks you to read, extract, get, confirm or return a value, you must
+  `extract` that value by its element id before you finish. The extract is what the
+  capability hands back to whoever calls it, so a run that ends without one has produced a
+  capability that returns nothing. Quoting the value in goal_evidence is not a substitute.
 - Set goal_reached to true only when the screen in front of you already proves the goal is
-  met, and quote that proof in goal_evidence. Do not predict; look.
+  met, and quote that proof in goal_evidence. Do not predict; look. If the goal named a
+  value to return, extract it first and finish on the turn after.
 - Prefer the smallest number of steps. Do not explore screens the goal does not need.
 """
 
@@ -162,15 +166,43 @@ class DiscoveryEngine:
             self.message = message
             self.terminal = terminal
 
+    # Refuse a premature completion once, then let the run finish and let the Recorder
+    # flag what it produced. A model that will not extract after being told twice is not
+    # going to on the third ask, and a loop that cannot end is worse than a flagged artifact.
+    MAX_EXTRACT_REFUSALS = 1
+
+    def _needs_extract(self, trace) -> bool:
+        if trace.extract_refusals >= self.MAX_EXTRACT_REFUSALS:
+            return False
+        if not goal_expects_value(trace.goal):
+            return False
+        return not any(s.action == "extract" and s.verified for s in trace.steps)
+
     def _apply(self, step_id, decision: Decision, elements, url_before, trace, values=None):
         action = decision.action
         rationale = decision.rationale
 
         if action == "done" or decision.goal_reached:
-            # Trusting the model's own completion signal is a v1 choice: there is no
-            # checkpoint to test against yet, because producing that checkpoint definition
-            # is what this run is *for*. The signal is only accepted on a step whose
-            # grounding and effect verification already passed.
+            # A goal phrased as "read the balance" is not finished while the value has only
+            # been *seen*. The model reliably reaches the right screen and then declares
+            # victory by quoting the value as evidence, which produces a capability that
+            # returns nothing and a checkpoint pinned to this run's literal answer. Asking
+            # for the extract in the prompt helps but does not hold, so the loop refuses the
+            # completion once and says why. Refused at most once per run: if the model
+            # insists, the run still completes and the Recorder flags the artifact, because
+            # a capability that navigates correctly is worth more than a failed run.
+            if self._needs_extract(trace):
+                trace.extract_refusals += 1
+                return (
+                    self._Outcome(
+                        False,
+                        "Not done yet: the goal asks for a value to be returned, and you "
+                        "have not extracted it. Find it under \"Read-only text and values\" "
+                        "and call extract with its element id and an output_name, then "
+                        "finish.",
+                    ),
+                    None,
+                )
             trace.status = "completed"
             trace.stop_reason = "model reported the goal was reached"
             trace.goal_evidence = decision.goal_evidence
@@ -267,6 +299,7 @@ class DiscoveryEngine:
             element=element,
             typed_value=typed_template,
             extracted_value=extracted,
+            output_name=decision.output_name if action == "extract" else None,
             url_after=url_after,
             locator=locator,
             verified=effect.ok,
@@ -326,7 +359,8 @@ class DiscoveryEngine:
 
     def _make_step(
         self, step_id, action, rationale, url_before, element=None, url_value=None,
-        typed_value=None, extracted_value=None, url_after=None, risk_class="safe",
+        typed_value=None, extracted_value=None, output_name=None, url_after=None,
+        risk_class="safe",
         verified=True, verification_note=None, description="", locator=None,
     ) -> TraceStep:
         return TraceStep(
@@ -340,6 +374,7 @@ class DiscoveryEngine:
             url_value=url_value,
             typed_value=typed_value,
             extracted_value=extracted_value,
+            output_name=output_name,
             risk_class=risk_class,
             url_before=url_before,
             url_after=url_after or self._safe_url(),

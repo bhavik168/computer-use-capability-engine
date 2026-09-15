@@ -12,7 +12,8 @@ import re
 from datetime import datetime, timezone
 from urllib.parse import urlparse
 
-from engine.discovery.trace import DiscoveryTrace, TraceStep
+from engine.discovery.trace import DiscoveryTrace, TraceStep, goal_expects_value
+from engine.reporting.redaction import stable_fragment
 from engine.schema.artifact import (
     Artifact,
     Checkpoint,
@@ -22,6 +23,7 @@ from engine.schema.artifact import (
     Locator,
     Output,
     Provenance,
+    Review,
     Step,
     TargetApp,
     UrlTarget,
@@ -164,6 +166,30 @@ class Recorder:
                 )
             )
 
+        # A goal phrased as "read the balance" that recorded no extract has produced a
+        # capability returning nothing — the model satisfied itself by *seeing* the value
+        # and quoting it as evidence rather than recording it. The artifact is still
+        # compiled, because the navigation it learned is genuinely useful, but it must not
+        # pass as a finished capability: the checkpoint in that case degrades to matching
+        # this run's literal answer, which is not an assertion about any future run.
+        review = Review()
+        confidence = self._confidence(trace)
+        if not outputs and goal_expects_value(trace.goal):
+            log.warning(
+                "%s: goal asks for a value but no extract was recorded — the capability "
+                "returns no outputs and its checkpoint falls back to literal page text",
+                capability_id,
+            )
+            review = Review(
+                optimization_notes=(
+                    "Goal names a value to return, but discovery recorded no extract step, "
+                    "so outputs is empty and the checkpoint matches this run's literal "
+                    "text. Re-record, or add the output and checkpoint by hand, before "
+                    "trusting this capability to return data."
+                )
+            )
+            confidence = round(max(confidence - 0.3, 0.1), 2)
+
         artifact = Artifact(
             capability_id=capability_id,
             version=version,
@@ -175,7 +201,7 @@ class Recorder:
                 created_from_run=trace.run_id,
                 created_at=datetime.now(timezone.utc).isoformat(),
                 last_validated_at=None,
-                confidence=self._confidence(trace),
+                confidence=confidence,
             ),
             input_params=list(params.values()),
             steps=steps,
@@ -187,6 +213,7 @@ class Recorder:
                     self.knowledge_base.outcomes(trace.app_id) if self.knowledge_base else []
                 )
             ],
+            review=review,
         )
         return artifact
 
@@ -211,9 +238,16 @@ class Recorder:
                 ),
                 pattern=_pattern_for(last_extract.extracted_value),
             )
-        evidence = (trace.goal_evidence or "").strip()
-        if evidence:
-            return Checkpoint(type="text_contains", text=evidence[:80])
+        # Otherwise the model's own proof text becomes the assertion — but only the part of
+        # it that will still be true next time. Quoted raw, "Sub-account successfully
+        # created. Sub-Account ID SUB-10002-03" pins the checkpoint to one run's generated
+        # id and to one caller's parameters, so the capability fails its own next replay.
+        # Stripping the caller's values and then generalising record data leaves the part
+        # that is actually the success condition: the application's own confirmation wording.
+        evidence = self._strip_param_values((trace.goal_evidence or "").strip(), as_template=False)
+        fragment = stable_fragment(evidence) if evidence else None
+        if fragment:
+            return Checkpoint(type="text_contains", text=fragment[:80])
         return Checkpoint(type="url_contains", text=_relative(trace.final_url))
 
     PLACEHOLDER = re.compile(r"^\{\{(\w+)\}\}$")
@@ -231,9 +265,19 @@ class Recorder:
         """
         if overrides and step.step_id in overrides:
             return overrides[step.step_id]
-        match = self.PLACEHOLDER.match((step.typed_value or "").strip())
+        typed = (step.typed_value or "").strip()
+        match = self.PLACEHOLDER.match(typed)
         if match:
             return match.group(1)
+        # The model is asked to type `{{partial_ssn}}`, but when the goal sentence quotes the
+        # value ("search by partial SSN 6789") it will often type the literal instead. The
+        # value is still the caller's, so recognising it recovers the caller's name for it —
+        # without this the parameter is named after the input field it happened to land in
+        # (`search_by_member_id_name_or_partial_ssn`), which is the screen's vocabulary
+        # rather than the capability's contract.
+        for value, name in self._templatable:
+            if typed == value:
+                return name
         return _slug(step.element_name or step.step_id)
 
     @staticmethod
@@ -242,6 +286,16 @@ class Recorder:
         return None if Recorder.PLACEHOLDER.match(value) else (value or None)
 
     def _output_name(self, trace: DiscoveryTrace, step: TraceStep) -> str:
+        # The model names the value as it reads it, which is the only point in the system
+        # where the *meaning* of a table cell is known — the cell's accessible name is the
+        # balance itself, and the column header it sits under is not part of the element.
+        # A caller reading back `savings_balance` has a contract; one reading back `result`
+        # has a string. The name is still sanitised: it is model-supplied text heading for
+        # a schema field, so it is slugged and rejected if it turns out to be the value.
+        if step.output_name:
+            named = _slug(self._strip_param_values(step.output_name, as_template=False))
+            if named and not named[0].isdigit() and not _looks_like_money(step.output_name):
+                return named
         # Drop any caller-supplied value out of the name too, so a member-scoped extract is
         # not immortalised as `member_detail_frank_osei_10007`.
         raw = self._strip_param_values(step.element_name or "", as_template=False)

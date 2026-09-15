@@ -88,6 +88,15 @@ def build_tool_schema(elements: list[ObservedElement]) -> list[dict]:
                         "type": "string",
                         "description": "Relative URL to load, for action=navigate.",
                     },
+                    "output_name": {
+                        "type": "string",
+                        "description": (
+                            "For action=extract: what this value is, as a snake_case field "
+                            "name the calling agent will read it back under — "
+                            "'savings_balance', 'account_types', 'confirmed_phone_number'. "
+                            "Name the meaning, never the value itself."
+                        ),
+                    },
                     "goal_reached": {
                         "type": "boolean",
                         "description": (

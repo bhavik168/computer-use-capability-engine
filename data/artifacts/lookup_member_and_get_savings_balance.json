@@ -1,0 +1,169 @@
+{
+  "capability_id": "lookup_member_and_get_savings_balance",
+  "version": "1.0.0",
+  "status": "draft",
+  "description": "Look up a member by ID and return their current savings balance.",
+  "target_app": {
+    "app_id": "127.0.0.1_5050",
+    "surface_type": "web"
+  },
+  "requires": [
+    "operator_login"
+  ],
+  "risk_class": "safe",
+  "provenance": {
+    "created_from_run": "discovery_20260915T034656_e21f41",
+    "created_at": "2026-09-15T03:47:04.171610+00:00",
+    "last_validated_at": null,
+    "confidence": 1.0
+  },
+  "input_params": [
+    {
+      "name": "member_id",
+      "type": "string",
+      "required": true,
+      "description": "Value for the 'Search by Member ID, Name, or partial SSN' field",
+      "example": null,
+      "secret": false
+    }
+  ],
+  "steps": [
+    {
+      "step_id": "s0",
+      "action": "navigate",
+      "target": {
+        "kind": "url",
+        "value": "/"
+      },
+      "value_from_param": null,
+      "value": null,
+      "risk_class": "safe",
+      "description": "Open the capability's entry point, /"
+    },
+    {
+      "step_id": "s1",
+      "action": "type",
+      "target": {
+        "kb_element_id": null,
+        "locator": {
+          "primary": {
+            "strategy": "role+name",
+            "value": "textbox:Search by Member ID, Name, or partial SSN"
+          },
+          "fallbacks": [
+            {
+              "strategy": "css",
+              "value": "body > table:nth-of-type(1) > tbody:nth-of-type(1) > tr:nth-of-type(3) > td:nth-of-type(1) > form:nth-of-type(1) > input:nth-of-type(1)"
+            }
+          ]
+        }
+      },
+      "value_from_param": "member_id",
+      "value": null,
+      "risk_class": "safe",
+      "description": "Typed {{member_id}} into textbox \"Search by Member ID, Name, or partial SSN\""
+    },
+    {
+      "step_id": "s2",
+      "action": "click",
+      "target": {
+        "kb_element_id": null,
+        "locator": {
+          "primary": {
+            "strategy": "role+name",
+            "value": "button:Search"
+          },
+          "fallbacks": [
+            {
+              "strategy": "css",
+              "value": "body > table:nth-of-type(1) > tbody:nth-of-type(1) > tr:nth-of-type(3) > td:nth-of-type(1) > form:nth-of-type(1) > p:nth-of-type(1) > button:nth-of-type(1)"
+            }
+          ]
+        }
+      },
+      "value_from_param": null,
+      "value": null,
+      "risk_class": "safe",
+      "description": "Clicked button \"Search\""
+    },
+    {
+      "step_id": "s3",
+      "action": "click",
+      "target": {
+        "kb_element_id": null,
+        "locator": {
+          "primary": {
+            "strategy": "role+name",
+            "value": "link:{{member_id}}"
+          },
+          "fallbacks": [
+            {
+              "strategy": "css",
+              "value": "body > table:nth-of-type(1) > tbody:nth-of-type(1) > tr:nth-of-type(3) > td:nth-of-type(1) > table:nth-of-type(1) > tbody:nth-of-type(1) > tr:nth-of-type(2) > td:nth-of-type(1) > a:nth-of-type(1)"
+            }
+          ]
+        }
+      },
+      "value_from_param": null,
+      "value": null,
+      "risk_class": "safe",
+      "description": "Clicked link \"10001\""
+    },
+    {
+      "step_id": "s4",
+      "action": "extract",
+      "target": {
+        "kb_element_id": null,
+        "locator": {
+          "primary": {
+            "strategy": "css",
+            "value": "body > table:nth-of-type(1) > tbody:nth-of-type(1) > tr:nth-of-type(3) > td:nth-of-type(1) > table:nth-of-type(2) > tbody:nth-of-type(1) > tr:nth-of-type(3) > td:nth-of-type(3)"
+          },
+          "fallbacks": [
+            {
+              "strategy": "role+name",
+              "value": "cell:$8,714.97"
+            }
+          ]
+        }
+      },
+      "value_from_param": null,
+      "value": null,
+      "risk_class": "safe",
+      "description": "Read '$8,714.97' from cell \"$8,714.97\""
+    }
+  ],
+  "checkpoint": {
+    "type": "element_present_with_pattern",
+    "target": {
+      "kb_element_id": null,
+      "locator": {
+        "primary": {
+          "strategy": "css",
+          "value": "body > table:nth-of-type(1) > tbody:nth-of-type(1) > tr:nth-of-type(3) > td:nth-of-type(1) > table:nth-of-type(2) > tbody:nth-of-type(1) > tr:nth-of-type(3) > td:nth-of-type(3)"
+        },
+        "fallbacks": [
+          {
+            "strategy": "role+name",
+            "value": "cell:$8,714.97"
+          }
+        ]
+      }
+    },
+    "pattern": "^[$\u20ac\u00a3]?[0-9,]+\\.[0-9]{2}$",
+    "text": null
+  },
+  "outputs": [
+    {
+      "name": "savings_balance",
+      "type": "currency",
+      "source_step": "s4"
+    }
+  ],
+  "known_outcomes": [],
+  "review": {
+    "status": "not_reviewed",
+    "optimization_notes": null,
+    "reviewed_at": null
+  }
+}
