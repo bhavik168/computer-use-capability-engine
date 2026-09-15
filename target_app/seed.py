@@ -1,35 +1,31 @@
-"""Re-seed the MongoDB collections from the canonical data in db.py.
-
-Usage:  python seed.py
-Requires MONGODB_URI. Wipes and re-inserts staff_users and customers.
-"""
-
+"""Re-seed a configured MongoDB instance from the canonical constants in db.py."""
 import os
 import sys
 
-from dotenv import load_dotenv
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass
 
 import db
 
-load_dotenv()
-
 
 def main():
-    uri = (os.environ.get("MONGODB_URI") or "").strip()
-    if not uri or uri.startswith("mongodb+srv://<"):
-        print("MONGODB_URI is not set - nothing to seed.", file=sys.stderr)
-        print("The app will run against its in-memory store instead.", file=sys.stderr)
+    if not os.environ.get("MONGODB_URI", "").strip():
+        print("MONGODB_URI is not set. Copy .env.example to .env and point "
+              "MONGODB_URI at your MongoDB instance before seeding.", file=sys.stderr)
         return 1
-
     store = db.get_store()
     if store.backend != "mongodb":
-        print("Could not reach MongoDB - see the message above.", file=sys.stderr)
+        print("Could not connect to MongoDB with the configured MONGODB_URI. "
+              "Nothing was seeded.", file=sys.stderr)
         return 1
-
     store.seed()
-    print(f"Seeded {len(db.STAFF_USERS)} staff users and {len(db.CUSTOMERS)} customers.")
+    print(f"Seeded {len(db.MEMBERS)} members, {len(db.ACCOUNTS)} accounts and "
+          f"{len(db.OPERATORS)} operators.")
     return 0
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    sys.exit(main())

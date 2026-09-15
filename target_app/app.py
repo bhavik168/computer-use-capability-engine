@@ -1,71 +1,108 @@
-"""CoreBank Servicing Console.
-
-A deliberately legacy-styled, server-rendered back-office app. No JSON API for
-any banking action, one entry point (login), full page loads only.
 """
+Member Servicing Portal (App 1) — Flask routes.
 
+The baseline app: search -> detail -> action, with inline validation, a
+not-found outcome, a permission-denied outcome on restricted members, and a
+session that expires on inactivity.
+
+    ./run.sh    -> http://127.0.0.1:5001   (operator1/pass123)
+"""
 import os
+import time
 
-from dotenv import load_dotenv
-from flask import (
-    Flask,
-    redirect,
-    render_template,
-    request,
-    session,
-    url_for,
-)
+from flask import Flask, redirect, render_template, request, session, url_for
 
 import db
 
-load_dotenv()
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:  # python-dotenv is optional at runtime
+    pass
 
 app = Flask(__name__)
-app.secret_key = os.environ.get("FLASK_SECRET_KEY") or "corebank-dev-secret"
+app.secret_key = os.environ.get("FLASK_SECRET_KEY", "change-me-dev-secret")
+SESSION_TIMEOUT_SECONDS = int(os.environ.get("SESSION_TIMEOUT_SECONDS", "90"))
+PORT = int(os.environ.get("PORT", "5001"))
 
 store = db.get_store()
 
-# Correspondent-bank wire tiers, loaded from the limit table at start-up.
-WIRE_TIER_LIMITS = None
 
-
-def current_operator():
-    return session.get("operator")
-
-
+@app.template_filter("money")
 def money(value):
-    if value is None:
-        return "--"
-    return f"{value:,.2f}"
+    return f"${float(value):,.2f}"
 
 
-app.jinja_env.filters["money"] = money
+@app.context_processor
+def inject_operator():
+    return {"operator": session.get("operator")}
+
+
+# ---------------------------------------------------------------------------
+# Session handling
+# ---------------------------------------------------------------------------
+
+def touch_session():
+    session["last_active"] = time.time()
+
+
+def session_is_live():
+    if not session.get("operator"):
+        return False
+    if time.time() - session.get("last_active", 0) > SESSION_TIMEOUT_SECONDS:
+        session.clear()
+        # Remember that there *was* a session, so the guard can tell an expired
+        # operator (-> /session-expired) from one who never signed on (-> /login).
+        session["_had"] = True
+        return False
+    touch_session()
+    return True
+
+
+@app.before_request
+def guard():
+    if request.endpoint in ("login", "static", "session_expired", "healthz"):
+        return
+    if not session_is_live():
+        if session.get("_had"):
+            return redirect(url_for("session_expired"))
+        return redirect(url_for("login"))
+
+
+# ---------------------------------------------------------------------------
+# Session routes
+# ---------------------------------------------------------------------------
+
+@app.route("/healthz")
+def healthz():
+    return "OK", 200
 
 
 @app.route("/")
 def index():
-    return redirect(url_for("login"))
+    return redirect(url_for("member_search"))
 
 
 @app.route("/login", methods=["GET", "POST"])
 def login():
+    error = None
     if request.method == "POST":
-        username = (request.form.get("username") or "").strip()
-        password = request.form.get("password") or ""
-        user = store.find_staff_user(username, password)
-        if user:
+        record = store.find_operator(request.form.get("username", ""),
+                                     request.form.get("password", ""))
+        if record:
             session.clear()
-            session["operator"] = {
-                "username": user["username"],
-                "display_name": user["display_name"],
-            }
-            return redirect(url_for("search"))
-        return render_template(
-            "login.html",
-            error="Sign-on failed. Check the user ID and password and try again.",
-            username=username,
-        )
-    return render_template("login.html", error=None, username="")
+            session["operator"] = record["username"]
+            session["_had"] = True
+            touch_session()
+            return redirect(url_for("member_search"))
+        error = "Invalid username or password."
+    return render_template("login.html", error=error)
+
+
+@app.route("/session-expired")
+def session_expired():
+    session.clear()
+    return render_template("session_expired.html")
 
 
 @app.route("/logout")
@@ -74,187 +111,92 @@ def logout():
     return redirect(url_for("login"))
 
 
-@app.route("/search", methods=["GET", "POST"])
-def search():
-    operator = current_operator()
-    if not operator:
-        return redirect(url_for("login"))
+# ---------------------------------------------------------------------------
+# Members
+# ---------------------------------------------------------------------------
 
+@app.route("/members/search", methods=["GET", "POST"])
+def member_search():
+    query = ""
+    results = None
     if request.method == "POST":
-        customer_id = (request.form.get("customer_id") or "").strip()
-        if not customer_id:
-            return render_template(
-                "search.html",
-                operator=operator,
-                message="Enter a Customer ID to run a member lookup.",
-                message_kind="warning",
-                customer_id="",
-            )
-
-        customer = store.find_customer(customer_id)
-        if not customer:
-            return render_template(
-                "search.html",
-                operator=operator,
-                message=f"No member found with that ID ({customer_id}).",
-                message_kind="error",
-                customer_id=customer_id,
-            )
-        if customer["status"] == "restricted":
-            return render_template(
-                "search.html",
-                operator=operator,
-                message=(
-                    f"Account {customer_id} is restricted. "
-                    "You do not have permission to service this member."
-                ),
-                message_kind="error",
-                customer_id=customer_id,
-            )
-        return redirect(url_for("member", customer_id=customer_id, tab="profile"))
-
-    return render_template(
-        "search.html",
-        operator=operator,
-        message=None,
-        message_kind=None,
-        customer_id="",
-    )
+        query = request.form.get("query", "").strip()
+        results = store.search_members(query)
+    return render_template("search.html", results=results, query=query)
 
 
-@app.route("/members/<customer_id>")
-def member(customer_id):
-    operator = current_operator()
-    if not operator:
-        return redirect(url_for("login"))
-
-    customer = store.find_customer(customer_id)
-    if not customer or customer["status"] == "restricted":
-        return redirect(url_for("search"))
-
-    tab = request.args.get("tab", "profile")
-    if tab not in ("profile", "account", "transfer"):
-        tab = "profile"
-
-    return render_template(
-        "member.html", operator=operator, customer=customer, tab=tab
-    )
+@app.route("/members/<member_id>")
+def member_detail(member_id):
+    member = store.find_member(member_id)
+    if not member:
+        return render_template("member_not_found.html")
+    if member["restricted"]:
+        return render_template("permission_denied.html", member_id=member_id)
+    return render_template("member_detail.html", member=member,
+                           accounts=store.list_accounts_for_member(member_id))
 
 
-@app.route("/members/<customer_id>/balance-frame")
-def balance_frame(customer_id):
-    if not current_operator():
-        return render_template("frame_expired.html")
-
-    customer = store.find_customer(customer_id)
-    if not customer or customer["status"] == "restricted":
-        return render_template("frame_expired.html")
-
-    return render_template("balance_frame.html", customer=customer)
-
-
-@app.route("/members/<customer_id>/transfer", methods=["GET", "POST"])
-def transfer(customer_id):
-    operator = current_operator()
-    if not operator:
-        return redirect(url_for("login"))
-
-    customer = store.find_customer(customer_id)
-    if not customer or customer["status"] == "restricted":
-        return redirect(url_for("search"))
-
+@app.route("/members/<member_id>/edit", methods=["GET", "POST"])
+def edit_member(member_id):
+    member = store.find_member(member_id)
+    if not member:
+        return render_template("member_not_found.html")
+    error = None
+    saved = False
     if request.method == "POST":
-        raw_amount = (request.form.get("amount") or "").strip()
-        target_account = (request.form.get("target_account") or "").strip()
-        error = None
-        amount = None
+        address = request.form.get("address", "").strip()
+        phone = request.form.get("phone", "").strip()
+        if not address or not phone:
+            error = "Address and Phone are both required fields."
+        elif not any(ch.isdigit() for ch in phone):
+            error = "Phone number does not appear to be valid."
+        else:
+            member = store.update_member_contact(member_id, address, phone)
+            saved = True
+    return render_template("edit_member.html", member=member, error=error, saved=saved)
 
+
+# ---------------------------------------------------------------------------
+# Accounts
+# ---------------------------------------------------------------------------
+
+@app.route("/accounts/<account_id>")
+def account_detail(account_id):
+    account = store.find_account(account_id)
+    if not account:
+        return render_template("account_not_found.html")
+    return render_template("account_detail.html", account=account,
+                           member=store.find_member(account["member_id"]))
+
+
+@app.route("/accounts/<account_id>/subaccount", methods=["POST"])
+def create_subaccount(account_id):
+    account = store.find_account(account_id)
+    if not account:
+        return render_template("account_not_found.html")
+
+    purpose = request.form.get("purpose", "").strip()
+    deposit = request.form.get("deposit", "").strip()
+    error = None
+    amount = None
+    if not purpose:
+        error = "Purpose is a required field."
+    elif not deposit:
+        error = "Initial deposit is a required field."
+    else:
         try:
-            amount = float(raw_amount.replace(",", ""))
+            amount = float(deposit)
+            if amount < 0:
+                error = "Initial deposit cannot be negative."
         except ValueError:
-            error = "Enter the transfer amount as a number, for example 125.00."
+            error = "Initial deposit must be a valid number."
+    if error:
+        return render_template("subaccount_error.html", account_id=account_id,
+                               error=error)
 
-        if error is None and amount > 1000000:
-            amount = amount * WIRE_TIER_LIMITS["surcharge_multiplier"]
-
-        if error is None and amount <= 0:
-            error = "The transfer amount must be greater than zero."
-        if error is None and not target_account:
-            error = "Enter the target account number."
-        if error is None and amount > (customer["savings_balance"] or 0):
-            error = (
-                "Insufficient funds in savings for this transfer. "
-                f"Available balance is {money(customer['savings_balance'])}."
-            )
-
-        if error:
-            return render_template(
-                "transfer_form.html",
-                operator=operator,
-                customer=customer,
-                error=error,
-                amount=raw_amount,
-                target_account=target_account,
-            )
-
-        return render_template(
-            "transfer_confirm.html",
-            operator=operator,
-            customer=customer,
-            amount=amount,
-            target_account=target_account,
-        )
-
-    return render_template(
-        "transfer_form.html",
-        operator=operator,
-        customer=customer,
-        error=None,
-        amount="",
-        target_account="",
-    )
-
-
-@app.route("/members/<customer_id>/transfer/confirm", methods=["POST"])
-def transfer_confirm(customer_id):
-    operator = current_operator()
-    if not operator:
-        return redirect(url_for("login"))
-
-    customer = store.find_customer(customer_id)
-    if not customer or customer["status"] == "restricted":
-        return redirect(url_for("search"))
-
-    # Simulated mid-flow session timeout: the one built-in recoverable failure.
-    if customer.get("session_expires_on_confirm"):
-        session.clear()
-        return redirect(url_for("login"))
-
-    try:
-        amount = float((request.form.get("amount") or "0").replace(",", ""))
-    except ValueError:
-        amount = 0.0
-    target_account = (request.form.get("target_account") or "").strip()
-
-    updated = store.apply_transfer(customer_id, amount) or customer
-    digits = "".join(ch for ch in target_account if ch.isdigit()) or "0"
-    reference = "TRF-{}-{}{}".format(customer_id, digits[-4:], int(amount * 100) % 10000)
-
-    return render_template(
-        "transfer_success.html",
-        operator=operator,
-        customer=updated,
-        amount=amount,
-        target_account=target_account,
-        reference=reference,
-    )
-
-
-@app.route("/healthz")
-def healthz():
-    return "OK", 200
+    sub = store.create_sub_account(account_id, purpose, amount)
+    return render_template("subaccount_created.html", account_id=account_id, sub=sub)
 
 
 if __name__ == "__main__":
-    port = int(os.environ.get("PORT", "5050"))
-    app.run(host="127.0.0.1", port=port, debug=False)
+    app.run(host="0.0.0.0", port=PORT, debug=False)
