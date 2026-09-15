@@ -15,6 +15,7 @@
 risky_action_names:
   - confirm
   - submit
+  - create
   - delete
   - remove
   - approve

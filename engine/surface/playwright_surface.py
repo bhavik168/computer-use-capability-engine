@@ -83,7 +83,7 @@ class PlaywrightSurface(Surface):
         # Accepts either an origin or a full entry-point URL; relative navigation resolves
         # against the origin either way.
         parsed = urlparse(base_url)
-        self.base_url = f"{parsed.scheme}://{parsed.netloc}" if parsed.netloc else base_url.rstrip("/")
+        self._base_url = f"{parsed.scheme}://{parsed.netloc}" if parsed.netloc else base_url.rstrip("/")
         # Non-headless by default: the visible window *is* the shared session a human takes
         # over during an escalation handoff, so there is no second console to build.
         if headless is None:
@@ -115,6 +115,10 @@ class PlaywrightSurface(Surface):
 
     def __exit__(self, *exc_info: object) -> None:
         self.close()
+
+    @property
+    def base_url(self) -> str:
+        return self._base_url
 
     @property
     def page(self):

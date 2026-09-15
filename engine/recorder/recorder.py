@@ -14,6 +14,7 @@ from urllib.parse import urlparse
 
 from engine.discovery.trace import DiscoveryTrace, TraceStep, goal_expects_value
 from engine.reporting.redaction import stable_fragment
+from engine.schema import templating
 from engine.schema.artifact import (
     Artifact,
     Checkpoint,
@@ -72,21 +73,10 @@ class Recorder:
                 description=f"Open the capability's entry point, {_relative(trace.target_url)}",
             )
         ]
-        # The values the caller supplied for this discovery run, longest first so that a
-        # value which contains another (member_id "10002" contains the deposit "100") is
-        # matched before the shorter one and never half-templated. Used to lift a hard-coded
-        # value back out of a locator whose accessible name embeds it — the result link's
-        # name *is* "10007", the detail heading *is* "…Frank Osei (10007)" — so the compiled
-        # capability targets `link:{{member_id}}`, not one specific member.
-        self._templatable = sorted(
-            (
-                (str(value), name)
-                for name, value in (param_values or {}).items()
-                if value and len(str(value)) >= 3
-            ),
-            key=lambda pair: len(pair[0]),
-            reverse=True,
-        )
+        # The values the caller supplied for this discovery run. A local, threaded into the
+        # helpers that need it: as instance state it made `compile` non-reentrant and every
+        # helper silently dependent on having been called from inside it.
+        templatable = templating.templatable(param_values)
         params: dict[str, InputParam] = {}
         outputs: list[Output] = []
         last_extract: TraceStep | None = None
@@ -114,11 +104,11 @@ class Recorder:
             target = ElementTarget(
                 # Backfilled by the Knowledge Base once it owns the element registry.
                 kb_element_id=None,
-                locator=Locator.model_validate(self._templatize_locator(locator)),
+                locator=Locator.model_validate(templating.templatize_locator(locator, templatable)),
             )
 
             if trace_step.action == "type":
-                param_name = self._param_name(trace_step, param_overrides)
+                param_name = self._param_name(trace_step, param_overrides, templatable)
                 is_secret = param_name in (secret_params or set())
                 params.setdefault(
                     param_name,
@@ -160,7 +150,7 @@ class Recorder:
         if last_extract is not None:
             outputs.append(
                 Output(
-                    name=self._output_name(trace, last_extract),
+                    name=self._output_name(last_extract, templatable),
                     type="currency" if _looks_like_money(last_extract.extracted_value) else "string",
                     source_step=last_extract.step_id,
                 )
@@ -205,7 +195,7 @@ class Recorder:
             ),
             input_params=list(params.values()),
             steps=steps,
-            checkpoint=self._checkpoint(trace, last_extract),
+            checkpoint=self._checkpoint(trace, last_extract, templatable),
             outputs=outputs,
             known_outcomes=[
                 KnownOutcome.model_validate(entry)
@@ -219,7 +209,12 @@ class Recorder:
 
     # ------------------------------------------------------------------ pieces
 
-    def _checkpoint(self, trace: DiscoveryTrace, last_extract: TraceStep | None) -> Checkpoint:
+    def _checkpoint(
+        self,
+        trace: DiscoveryTrace,
+        last_extract: TraceStep | None,
+        templatable: list[tuple[str, str]],
+    ) -> Checkpoint:
         """The goal condition, taken from whatever ended the discovery loop.
 
         When the run finished by reading a value, the checkpoint is that the same element
@@ -233,7 +228,7 @@ class Recorder:
                 target=ElementTarget(
                     kb_element_id=None,
                     locator=Locator.model_validate(
-                        self._templatize_locator(last_extract.locator)
+                        templating.templatize_locator(last_extract.locator, templatable)
                     ),
                 ),
                 pattern=_pattern_for(last_extract.extracted_value),
@@ -244,15 +239,21 @@ class Recorder:
         # id and to one caller's parameters, so the capability fails its own next replay.
         # Stripping the caller's values and then generalising record data leaves the part
         # that is actually the success condition: the application's own confirmation wording.
-        evidence = self._strip_param_values((trace.goal_evidence or "").strip(), as_template=False)
+        evidence = templating.templatize(
+            (trace.goal_evidence or "").strip(), templatable, as_template=False
+        )
         fragment = stable_fragment(evidence) if evidence else None
         if fragment:
             return Checkpoint(type="text_contains", text=fragment[:80])
         return Checkpoint(type="url_contains", text=_relative(trace.final_url))
 
-    PLACEHOLDER = re.compile(r"^\{\{(\w+)\}\}$")
 
-    def _param_name(self, step: TraceStep, overrides: dict[str, str] | None) -> str:
+    def _param_name(
+        self,
+        step: TraceStep,
+        overrides: dict[str, str] | None,
+        templatable: list[tuple[str, str]],
+    ) -> str:
         """Name the parameter a typed value came from.
 
         When the caller supplied the value, the trace holds the placeholder the model typed
@@ -266,16 +267,16 @@ class Recorder:
         if overrides and step.step_id in overrides:
             return overrides[step.step_id]
         typed = (step.typed_value or "").strip()
-        match = self.PLACEHOLDER.match(typed)
-        if match:
-            return match.group(1)
+        named = templating.param_name(typed)
+        if named:
+            return named
         # The model is asked to type `{{partial_ssn}}`, but when the goal sentence quotes the
         # value ("search by partial SSN 6789") it will often type the literal instead. The
         # value is still the caller's, so recognising it recovers the caller's name for it —
         # without this the parameter is named after the input field it happened to land in
         # (`search_by_member_id_name_or_partial_ssn`), which is the screen's vocabulary
         # rather than the capability's contract.
-        for value, name in self._templatable:
+        for value, name in templatable:
             if typed == value:
                 return name
         return _slug(step.element_name or step.step_id)
@@ -283,9 +284,9 @@ class Recorder:
     @staticmethod
     def _example(step: TraceStep) -> str | None:
         value = (step.typed_value or "").strip()
-        return None if Recorder.PLACEHOLDER.match(value) else (value or None)
+        return None if templating.param_name(value) else (value or None)
 
-    def _output_name(self, trace: DiscoveryTrace, step: TraceStep) -> str:
+    def _output_name(self, step: TraceStep, templatable: list[tuple[str, str]]) -> str:
         # The model names the value as it reads it, which is the only point in the system
         # where the *meaning* of a table cell is known — the cell's accessible name is the
         # balance itself, and the column header it sits under is not part of the element.
@@ -293,12 +294,12 @@ class Recorder:
         # has a string. The name is still sanitised: it is model-supplied text heading for
         # a schema field, so it is slugged and rejected if it turns out to be the value.
         if step.output_name:
-            named = _slug(self._strip_param_values(step.output_name, as_template=False))
+            named = _slug(templating.templatize(step.output_name, templatable, as_template=False))
             if named and not named[0].isdigit() and not _looks_like_money(step.output_name):
                 return named
         # Drop any caller-supplied value out of the name too, so a member-scoped extract is
         # not immortalised as `member_detail_frank_osei_10007`.
-        raw = self._strip_param_values(step.element_name or "", as_template=False)
+        raw = templating.templatize(step.element_name or "", templatable, as_template=False)
         name = _slug(raw)
         if not name or name == "value" or name[0].isdigit() or _looks_like_money(step.element_name):
             return "result"
@@ -309,40 +310,6 @@ class Recorder:
         if not value:
             return None
         return {"primary": {"strategy": "role+name", "value": value}, "fallbacks": []}
-
-    def _templatize_locator(self, locator: dict) -> dict:
-        """Rewrite a supplied parameter value embedded in a locator into `{{param}}`.
-
-        A `role+name` locator carries the element's accessible name, and for a search result
-        or a record heading that name *is* the identifier the caller passed in — `link:10007`,
-        `heading:Member Detail — Frank Osei (10007)`. Frozen literally, the capability only
-        ever resolves for that one member and silently rides positional fallbacks for any
-        other. Substituting the value back out (`link:{{member_id}}`) makes the locator mean
-        what discovery actually did: act on *the member the caller named*. Replay renders the
-        placeholder from its params before resolving. A no-op when no value is embedded, so
-        stable locators like `textbox:Username` are untouched.
-        """
-        if not self._templatable:
-            return locator
-
-        def render(rule: dict) -> dict:
-            return {**rule, "value": self._strip_param_values(rule["value"], as_template=True)}
-
-        return {
-            "primary": render(locator["primary"]),
-            "fallbacks": [render(rule) for rule in locator.get("fallbacks", [])],
-        }
-
-    def _strip_param_values(self, text: str, *, as_template: bool) -> str:
-        """Replace each embedded parameter value with its `{{name}}` template (or drop it).
-
-        Longest value first (see `self._templatable`) so an overlapping shorter value cannot
-        corrupt a substitution already made.
-        """
-        for value, name in self._templatable:
-            if value in text:
-                text = text.replace(value, f"{{{{{name}}}}}" if as_template else "")
-        return text
 
     @staticmethod
     def _confidence(trace: DiscoveryTrace) -> float:

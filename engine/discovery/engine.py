@@ -11,6 +11,7 @@ from __future__ import annotations
 import logging
 import time
 import uuid
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from urllib.parse import urljoin
 
@@ -18,8 +19,10 @@ from engine.discovery import grounding
 from engine.discovery.llm_client import Decision, LLMClient, LLMError
 from engine.discovery.loop_guard import LoopGuard
 from engine.policy.policy import Policy
+from engine.schema import templating
 from engine.discovery.trace import DiscoveryTrace, TraceStep, goal_expects_value
 from engine.surface.base import Surface, SurfaceError
+from engine.surface.elements import ObservedElement
 
 log = logging.getLogger(__name__)
 
@@ -48,6 +51,20 @@ Rules:
   value to return, extract it first and finish on the turn after.
 - Prefer the smallest number of steps. Do not explore screens the goal does not need.
 """
+
+
+@dataclass(frozen=True)
+class StepOutcome:
+    """What one attempted action did to the loop.
+
+    `ok` is reported back to the model as the result of its tool call, so it is the model's
+    only feedback signal; `terminal` ends the run. A nested class previously, which meant the
+    three methods returning it could not name it in their annotations.
+    """
+
+    ok: bool
+    message: str
+    terminal: bool = False
 
 
 class DiscoveryEngine:
@@ -160,12 +177,6 @@ class DiscoveryEngine:
 
     # ------------------------------------------------------------------ acting
 
-    class _Outcome:
-        def __init__(self, ok: bool, message: str, terminal: bool = False) -> None:
-            self.ok = ok
-            self.message = message
-            self.terminal = terminal
-
     # Refuse a premature completion once, then let the run finish and let the Recorder
     # flag what it produced. A model that will not extract after being told twice is not
     # going to on the third ask, and a loop that cannot end is worse than a flagged artifact.
@@ -178,7 +189,15 @@ class DiscoveryEngine:
             return False
         return not any(s.action == "extract" and s.verified for s in trace.steps)
 
-    def _apply(self, step_id, decision: Decision, elements, url_before, trace, values=None):
+    def _apply(
+        self,
+        step_id: str,
+        decision: Decision,
+        elements: list[ObservedElement],
+        url_before: str,
+        trace: DiscoveryTrace,
+        values: dict | None = None,
+    ) -> tuple[StepOutcome, TraceStep | None]:
         action = decision.action
         rationale = decision.rationale
 
@@ -194,7 +213,7 @@ class DiscoveryEngine:
             if self._needs_extract(trace):
                 trace.extract_refusals += 1
                 return (
-                    self._Outcome(
+                    StepOutcome(
                         False,
                         "Not done yet: the goal asks for a value to be returned, and you "
                         "have not extracted it. Find it under \"Read-only text and values\" "
@@ -206,7 +225,7 @@ class DiscoveryEngine:
             trace.status = "completed"
             trace.stop_reason = "model reported the goal was reached"
             trace.goal_evidence = decision.goal_evidence
-            return self._Outcome(True, "Run ended: goal reported reached.", terminal=True), None
+            return StepOutcome(True, "Run ended: goal reported reached.", terminal=True), None
 
         if action == "navigate":
             target = decision.url or ""
@@ -215,7 +234,7 @@ class DiscoveryEngine:
                 trace.status = "blocked_by_policy"
                 trace.stop_reason = f"navigation to {target} is outside the allowlist"
                 return (
-                    self._Outcome(False, f"Blocked: {target} is outside the allowlist.", True),
+                    StepOutcome(False, f"Blocked: {target} is outside the allowlist.", True),
                     None,
                 )
             self.surface.navigate(target)
@@ -223,20 +242,20 @@ class DiscoveryEngine:
                 step_id, "navigate", rationale, url_before, url_value=target,
                 description=f"Navigated to {target}",
             )
-            return self._Outcome(True, f"Navigated to {target}. Observe again."), step
+            return StepOutcome(True, f"Navigated to {target}. Observe again."), step
 
         element_id = decision.element_id
         expected = next((el for el in elements if el.element_id == element_id), None)
         if expected is None:
             return (
-                self._Outcome(False, f"{element_id!r} is not an element in this observation."),
+                StepOutcome(False, f"{element_id!r} is not an element in this observation."),
                 None,
             )
 
         check = grounding.reverify(self.surface, element_id, expected)
         if not check.ok:
             # A failed step, not a best guess: re-observe and let the model decide again.
-            return self._Outcome(False, f"Could not act: {check.reason}. Re-observe."), None
+            return StepOutcome(False, f"Could not act: {check.reason}. Re-observe."), None
 
         # Build the persistent locator now, while the element is definitely on screen — a
         # click may navigate away and leave nothing to describe afterwards.
@@ -258,9 +277,17 @@ class DiscoveryEngine:
         )
 
     def _perform(
-        self, step_id, action, rationale, decision, element, url_before, elements_before,
-        locator=None, values=None,
-    ):
+        self,
+        step_id: str,
+        action: str,
+        rationale: str | None,
+        decision: Decision,
+        element: ObservedElement,
+        url_before: str,
+        elements_before: list[ObservedElement],
+        locator: dict | None = None,
+        values: dict | None = None,
+    ) -> tuple[StepOutcome, TraceStep | None]:
         extracted = None
         typed_template = None
         try:
@@ -272,7 +299,7 @@ class DiscoveryEngine:
                 # Substitution happens here, at the keyboard, and nowhere earlier: the
                 # template is what the model chose and what the trace keeps, the real value
                 # only ever exists in this call.
-                text = self._substitute(typed_template, values or {})
+                text = templating.render(typed_template, values or {})
                 self.surface.type_text(element.element_id, text)
                 shown = typed_template if typed_template != text else repr(text)
                 description = f"Typed {shown} into {element.role} \"{element.name}\""
@@ -280,9 +307,9 @@ class DiscoveryEngine:
                 extracted = self.surface.read_text(element.element_id)
                 description = f"Read {extracted!r} from {element.role} \"{element.name}\""
             else:
-                return self._Outcome(False, f"Unsupported action {action!r}."), None
+                return StepOutcome(False, f"Unsupported action {action!r}."), None
         except SurfaceError as exc:
-            return self._Outcome(False, f"Action failed: {exc}"), None
+            return StepOutcome(False, f"Action failed: {exc}"), None
 
         elements_after = self.surface.observe()
         url_after = self.surface.current_url()
@@ -311,9 +338,18 @@ class DiscoveryEngine:
             if effect.ok
             else f" WARNING: {effect.reason}. Treat this step as not having worked."
         )
-        return self._Outcome(effect.ok, message), step
+        return StepOutcome(effect.ok, message), step
 
-    def _handle_risky(self, step_id, action, rationale, element, url_before, trace, locator=None):
+    def _handle_risky(
+        self,
+        step_id: str,
+        action: str,
+        rationale: str | None,
+        element: ObservedElement,
+        url_before: str,
+        trace: DiscoveryTrace,
+        locator: dict | None = None,
+    ) -> tuple[StepOutcome, TraceStep | None]:
         reason = f"Action classified risky: {element.name}"
         if self.escalation is None:
             # No escalation service attached (--no-escalation, or an unattended sweep). The
@@ -329,13 +365,13 @@ class DiscoveryEngine:
                 description=f"Paused before {element.role} \"{element.name}\" — needs approval",
             )
             trace.steps.append(step)
-            return self._Outcome(False, f"Halted: {reason}", terminal=True), None
+            return StepOutcome(False, f"Halted: {reason}", terminal=True), None
 
         self.escalation.raise_intervention_for_discovery(
             goal=trace.goal,
             current_step=f"{step_id}: {action} {element.role} \"{element.name}\"",
             reason=reason,
-            screenshot=self._screenshot(),
+            screenshot=self.surface.safe_screenshot(),
         )
         # The human may have performed the action, done something different, or simply
         # approved us to carry on. Re-observe and decide from whatever is now true rather
@@ -347,7 +383,7 @@ class DiscoveryEngine:
             description=f"Escalated before {element.role} \"{element.name}\"; human took control",
         )
         return (
-            self._Outcome(
+            StepOutcome(
                 True,
                 "A human took control of the live session and has handed it back. "
                 "Observe the current screen and continue from what is actually there.",
@@ -358,10 +394,22 @@ class DiscoveryEngine:
     # ------------------------------------------------------------------ helpers
 
     def _make_step(
-        self, step_id, action, rationale, url_before, element=None, url_value=None,
-        typed_value=None, extracted_value=None, output_name=None, url_after=None,
-        risk_class="safe",
-        verified=True, verification_note=None, description="", locator=None,
+        self,
+        step_id: str,
+        action: str,
+        rationale: str | None,
+        url_before: str,
+        element: ObservedElement | None = None,
+        url_value: str | None = None,
+        typed_value: str | None = None,
+        extracted_value: str | None = None,
+        output_name: str | None = None,
+        url_after: str | None = None,
+        risk_class: str = "safe",
+        verified: bool = True,
+        verification_note: str | None = None,
+        description: str = "",
+        locator: dict | None = None,
     ) -> TraceStep:
         return TraceStep(
             step_id=step_id,
@@ -377,19 +425,12 @@ class DiscoveryEngine:
             output_name=output_name,
             risk_class=risk_class,
             url_before=url_before,
-            url_after=url_after or self._safe_url(),
+            url_after=url_after or self.surface.safe_url(),
             verified=verified,
             verification_note=verification_note,
             description=description,
-            screenshot=self._screenshot(),
+            screenshot=self.surface.safe_screenshot(),
         )
-
-    @staticmethod
-    def _substitute(template: str, values: dict) -> str:
-        result = template
-        for name, value in values.items():
-            result = result.replace(f"{{{{{name}}}}}", str(value))
-        return result
 
     def _kb_hint(self, goal: str) -> str | None:
         if self.knowledge_base is None:
@@ -399,21 +440,9 @@ class DiscoveryEngine:
         # exploration is the fallback, not an error condition.
         return guidance.as_hint() if guidance else None
 
-    def _screenshot(self) -> bytes | None:
-        try:
-            return self.surface.screenshot()
-        except Exception:
-            return None
-
-    def _safe_url(self) -> str | None:
-        try:
-            return self.surface.current_url()
-        except Exception:
-            return None
-
     def _finish(self, trace: DiscoveryTrace, started: float) -> DiscoveryTrace:
         trace.duration_seconds = round(time.time() - started, 2)
-        trace.final_url = self._safe_url()
+        trace.final_url = self.surface.safe_url()
         trace.llm_calls = self.llm.calls
         if self.report_generator is not None:
             self.report_generator.generate_for_discovery(trace)

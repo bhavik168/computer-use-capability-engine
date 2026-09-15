@@ -21,6 +21,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from engine.surface.base import Surface
+from engine.schema import templating
 from engine.surface.elements import ObservedElement
 
 ACT_TOOL_NAME = "act"
@@ -128,7 +129,7 @@ def render_observation(
         lines += [
             "Values the caller supplied for this run. Type them as the placeholder shown —"
             " never invent a value, and never ask for one:",
-            *(f"  {name} → type it as {{{{{name}}}}}" for name in available_params),
+            *(f"  {name} → type it as {templating.placeholder(name)}" for name in available_params),
             "",
         ]
     lines.append("Elements you can click or type into:")

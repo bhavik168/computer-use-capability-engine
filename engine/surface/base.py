@@ -85,3 +85,38 @@ class Surface(ABC):
         `"primary"`, `"fallback[n]"`, or None. A run that leans on fallbacks is the drift
         signal the Knowledge Base consumes later.
         """
+
+    @property
+    @abstractmethod
+    def base_url(self) -> str:
+        """Origin of the deployment being driven, e.g. `https://corebank.example`.
+
+        Part of the interface rather than an implementation detail because artifacts store
+        *paths*, not hosts — that is what lets one capability replay against any institution
+        running the same application — so anything resolving a recorded step's relative URL
+        needs the deployment it is being resolved against. A desktop surface answers with
+        whatever plays the role of an origin for it (an application identifier), and a
+        surface with no such concept returns "".
+        """
+
+    # ---------------------------------------------------------------- best-effort reads
+    #
+    # Concrete, and deliberately not abstract: every caller wants "tell me the URL, and if
+    # the surface is mid-navigation or already torn down, say nothing rather than raising."
+    # Both engines had private copies of exactly this try/except, which meant the rule that
+    # observability must never be the thing that breaks a run was asserted in two places and
+    # owned by neither.
+
+    def safe_url(self) -> str | None:
+        """`current_url()`, or None if the surface cannot answer right now."""
+        try:
+            return self.current_url()
+        except Exception:  # noqa: BLE001 — a failed read must never fail the run
+            return None
+
+    def safe_screenshot(self) -> bytes | None:
+        """`screenshot()`, or None if one cannot be taken right now."""
+        try:
+            return self.screenshot()
+        except Exception:  # noqa: BLE001 — evidence is best-effort by definition
+            return None

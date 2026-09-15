@@ -15,9 +15,11 @@ import uuid
 from datetime import datetime, timezone
 from urllib.parse import urljoin
 
+from engine.learning.outcome_learner import candidate_detectors
 from engine.replay.result import RunResult, StepLog
+from engine.schema import templating
 from engine.schema.artifact import Artifact, ElementTarget, Step, UrlTarget
-from engine.surface.base import Surface
+from engine.surface.base import Surface, SurfaceError
 
 log = logging.getLogger(__name__)
 
@@ -61,7 +63,7 @@ class ReplayEngine:
                     capability_id=artifact.capability_id,
                     current_step=result.failed_at_step or "(after final step)",
                     reason=f"{result.status}: {result.outcome_code} — {result.message}",
-                    screenshot=self._safe_screenshot(),
+                    screenshot=self.surface.safe_screenshot(),
                     # A hard failure means this capability met a state nobody has named yet.
                     # Hand the human the strings worth naming it with.
                     candidates=(
@@ -109,10 +111,10 @@ class ReplayEngine:
                         step_id=step.step_id,
                         action=step.action,
                         description=f"{self._describe(step, params, artifact=artifact)} — raised {type(exc).__name__}",
-                        url=self._safe_url(),
+                        url=self.surface.safe_url(),
                         verified=False,
                         error=str(exc),
-                        screenshot=self._safe_screenshot(),
+                        screenshot=self.surface.safe_screenshot(),
                     )
                 )
                 return finish(
@@ -219,7 +221,12 @@ class ReplayEngine:
         for capability_id in artifact.requires:
             try:
                 names |= {p.name for p in self.store.load(capability_id).input_params}
-            except Exception:
+            except FileNotFoundError:
+                # A prerequisite that is not in the store fails the run properly a moment
+                # later, in _run_prerequisites, with a message that says so. Swallowing
+                # every exception here instead would turn a corrupt artifact into a
+                # baffling "unknown parameter" error about a parameter the caller supplied
+                # correctly.
                 continue
         return names
 
@@ -242,28 +249,29 @@ class ReplayEngine:
                 # Resolved the same way the Surface will resolve it: against the deployment
                 # base, not the current page. Artifacts store paths rather than hosts, and
                 # at the opening step there is no current page to resolve against yet.
-                base = getattr(self.surface, "base_url", "") or self.surface.current_url() or ""
-                absolute = urljoin(base + "/", step.target.value.lstrip("/"))
+                absolute = urljoin(
+                    self.surface.base_url + "/", step.target.value.lstrip("/")
+                )
                 if not self.policy.check_allowlist(absolute):
                     return (
                         StepLog(
                             step_id=step.step_id,
                             action=step.action,
                             description=f"Blocked: {step.target.value} is outside the allowlist",
-                            url=self._safe_url(),
+                            url=self.surface.safe_url(),
                             verified=False,
                             error=(
                                 f"Step {step.step_id}: navigation to {step.target.value!r} "
                                 "is outside the configured allowlist"
                             ),
-                            screenshot=self._safe_screenshot(),
+                            screenshot=self.surface.safe_screenshot(),
                         ),
                         None,
                     )
             self.surface.navigate(step.target.value)
         else:
             assert isinstance(step.target, ElementTarget)
-            locator = self._render_locator(step.target.locator.model_dump(), params)
+            locator = templating.render_locator(step.target.locator.model_dump(), params)
             element_id = self.surface.resolve_locator(locator)
             strategy = self.surface.last_resolution_strategy()
 
@@ -282,14 +290,14 @@ class ReplayEngine:
                         step_id=step.step_id,
                         action=step.action,
                         description=f"{self._describe(step, params, artifact=artifact)} — target not found",
-                        url=self._safe_url(),
+                        url=self.surface.safe_url(),
                         verified=False,
                         error=(
                             f"Step {step.step_id}: expected {self._locator_text(step)} "
                             f"on {self.surface.current_url()}, but no element resolved. "
                             f"Observed instead: {observed}"
                         ),
-                        screenshot=self._safe_screenshot(),
+                        screenshot=self.surface.safe_screenshot(),
                     ),
                     None,
                 )
@@ -306,9 +314,9 @@ class ReplayEngine:
             action=step.action,
             description=self._describe(step, params, extracted, artifact=artifact),
             locator_strategy=strategy,
-            url=self._safe_url(),
+            url=self.surface.safe_url(),
             verified=True,
-            screenshot=self._safe_screenshot(),
+            screenshot=self.surface.safe_screenshot(),
         )
         return step_log, self._match_known_outcome(artifact)
 
@@ -343,7 +351,7 @@ class ReplayEngine:
             expectation = f"URL containing {checkpoint.text!r}"
         else:
             element_id = self.surface.resolve_locator(
-                self._render_locator(checkpoint.target.locator.model_dump(), params)
+                templating.render_locator(checkpoint.target.locator.model_dump(), params)
             )
             if element_id is None:
                 observed = self.surface.current_url()
@@ -398,31 +406,6 @@ class ReplayEngine:
         return str(step.value or "")
 
     @staticmethod
-    def _render_locator(locator: dict, params: dict) -> dict:
-        """Substitute `{{param}}` placeholders in a locator's values with the run's params.
-
-        The Recorder lifts a caller-supplied value out of a locator whose accessible name
-        embeds it (`link:{{member_id}}`), so this resolves it back for the member actually
-        being looked up. Locators carrying no placeholder — the common case, and every
-        artifact compiled before templating existed — pass through unchanged.
-        """
-        if not params:
-            return locator
-
-        def render(text: str) -> str:
-            for name, value in params.items():
-                text = text.replace(f"{{{{{name}}}}}", str(value))
-            return text
-
-        def render_rule(rule: dict) -> dict:
-            return {**rule, "value": render(rule["value"])}
-
-        return {
-            "primary": render_rule(locator["primary"]),
-            "fallbacks": [render_rule(rule) for rule in locator.get("fallbacks", [])],
-        }
-
-    @staticmethod
     def _display_value(artifact: Artifact, step: Step, value: str) -> str:
         """What may be written to a log, a report or a step description.
 
@@ -464,22 +447,12 @@ class ReplayEngine:
         flat = " ".join(text.split())
         return flat if len(flat) <= limit else flat[:limit] + "…"
 
-    def _safe_url(self) -> str | None:
-        try:
-            return self.surface.current_url()
-        except Exception:
-            return None
-
     def _candidates(self) -> list[dict]:
+        """Detector suggestions for a state nobody has named yet. Best-effort by nature."""
         try:
-            from engine.learning.outcome_learner import candidate_detectors
-
             return candidate_detectors(self.surface.observe(), self.surface.current_url())
-        except Exception:
+        except SurfaceError:
+            # The page is already gone or unreadable. The escalation is still worth raising
+            # without suggestions; it just cannot offer strings to name the state with.
             return []
 
-    def _safe_screenshot(self) -> bytes | None:
-        try:
-            return self.surface.screenshot()
-        except Exception:
-            return None
