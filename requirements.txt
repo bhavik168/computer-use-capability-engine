@@ -1,6 +1,6 @@
 # Engine dependencies.
 # One-time setup after install: `playwright install chromium`.
-pydantic==2.9.2
+pydantic==2.12.5
 playwright==1.62.0
 PyYAML==6.0.2
 google-genai==2.23.0
