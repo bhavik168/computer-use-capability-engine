@@ -79,7 +79,7 @@ def _fixture_store() -> ArtifactStore:
 
 
 def _check(label: str, condition: bool, detail: str = "") -> bool:
-    print(f"{'PASS' if condition else 'FAIL'}  {label}{(' — ' + detail) if detail else ''}")
+    print(f"{'PASS' if condition else 'FAIL'}  {label}{(': ' + detail) if detail else ''}")
     return condition
 
 
@@ -182,7 +182,7 @@ def live() -> bool:
     try:
         llm = GeminiClient()
     except LLMError as exc:
-        print(f"SKIP  live parse — {exc}")
+        print(f"SKIP  live parse: {exc}")
         return True
 
     store = _fixture_store()

@@ -111,7 +111,7 @@ def cli(ctx: click.Context, verbose: bool, headless: bool, policy: str) -> None:
 @click.pass_context
 def discover(ctx, goal, target, capability_id, description, app_id, params, secrets,
              requires, max_steps, timeout, no_escalation):
-    """Run the LLM-driven discovery loop and record a capability from a successful run."""
+    """Run the discovery loop and record a capability from a successful run."""
     result = _run_discovery(
         goal=goal,
         target=target,
@@ -232,13 +232,13 @@ def _echo_discovery(result: dict) -> None:
 
     if result["status"] != "success":
         click.echo(f"Stop reason      : {result['message']}")
-        click.echo("\nNo artifact saved — the run did not complete.")
+        click.echo("\nNo artifact saved; the run did not complete.")
         return
 
     click.echo(f"Artifact         : {result['artifact']} (v{result['version']}, {result['risk_class']})")
     click.echo(f"Parameters       : {result['input_params'] or 'none'}")
     click.echo(
-        f"Known outcomes   : {result['known_outcomes'] or 'none yet — '}"
+        f"Known outcomes   : {result['known_outcomes'] or 'none yet, '}"
         + ("" if result["known_outcomes"] else "the KB has not been taught any for this app")
     )
 
@@ -253,7 +253,7 @@ def _establish(store, surface, capability_ids, values, policy=None) -> str | Non
         accepted = {p.name for p in artifact.input_params}
         result = engine.run(artifact, {k: v for k, v in values.items() if k in accepted})
         if result.status != "success":
-            return f"prerequisite {capability_id!r} failed: {result.status} — {result.message}"
+            return f"prerequisite {capability_id!r} failed: {result.status}, {result.message}"
     return None
 
 
@@ -270,7 +270,7 @@ def _establish(store, surface, capability_ids, values, policy=None) -> str | Non
 @click.option("--no-escalation", is_flag=True, help="Do not notify a human on failure.")
 @click.pass_context
 def replay(ctx, capability, target, params, artifact_file, no_escalation):
-    """Execute a known capability deterministically — no LLM in this path."""
+    """Execute a known capability deterministically, with no LLM in this path."""
     result = _run_replay(
         capability_id=capability,
         target=target,
@@ -302,7 +302,7 @@ def _run_replay(
     hearing about; a plan, by contrast, carries every value the operator mentioned in
     one sentence and hands the same bag to each call in turn, so the lookup receiving a
     `password` it has no use for is the normal case rather than an error. What each
-    capability accepts is still read from the artifact — including the parameters its
+    capability accepts is still read from the artifact, including the parameters its
     prerequisites declare, which is how a login inside a `requires` chain gets its
     credentials without the calling capability declaring them.
     """
@@ -387,11 +387,11 @@ def _echo_replay(result: dict) -> None:
 @click.option("--no-escalation", is_flag=True, help="Halt on risky actions instead of pausing for a human.")
 @click.pass_context
 def run(ctx, prompt, target, app_id, yes, dry_run, max_steps, timeout, no_escalation):
-    """Do what a plain-language goal asks, planning the capabilities it needs.
+    """Do what a goal in plain language asks, planning the capabilities it needs.
 
     The layer the other commands were always underneath. One model call turns the goal
-    into an ordered plan — which capabilities, in what order, replaying what is already
-    recorded and discovering only what is not — and the plan is printed and confirmed
+    into an ordered plan: which capabilities, in what order, replaying what is already
+    recorded and discovering only what is not, and the plan is printed and confirmed
     before a browser opens. Nothing here decides how to drive the application; that is
     still the Discovery Engine's job, and a capability it already recorded is still
     replayed with no model in the loop.

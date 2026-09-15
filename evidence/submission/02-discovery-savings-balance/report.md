@@ -1,4 +1,4 @@
-# Run report — Look up member 10001 and read their savings balance
+# Run report: Look up member 10001 and read their savings balance
 
 **Run id:** `discovery_20260915T034656_e21f41`  
 **Goal:** Look up member 10001 and read their savings balance  
@@ -7,25 +7,25 @@
 
 ## Steps
 
-### 1. type — Search by Member ID, Name, or partial SSN
+### 1. type: Search by Member ID, Name, or partial SSN
 ![screenshot](screenshots/step1.png)
 Typed {{member_id}} into textbox "Search by Member ID, Name, or partial SSN".
 *Rationale: Type the member id placeholder into the search box to look up member 10001.*
 Locator: textbox:Search by Member ID, Name, or partial SSN · Verified: ✓ · URL: `http://127.0.0.1:5050/members/search`
 
-### 2. click — Search
+### 2. click: Search
 ![screenshot](screenshots/step2.png)
 Clicked button "Search".
 *Rationale: Click the Search button to execute the search for member 10001.*
 Locator: button:Search · Verified: ✓ · URL: `http://127.0.0.1:5050/members/search`
 
-### 3. click — 10001
+### 3. click: 10001
 ![screenshot](screenshots/step3.png)
 Clicked link "10001".
 *Rationale: Click on member ID 10001 to view member details and find their savings balance.*
 Locator: link:10001 · Verified: ✓ · URL: `http://127.0.0.1:5050/members/10001`
 
-### 4. extract — $8,714.97
+### 4. extract: $8,714.97
 ![screenshot](screenshots/step4.png)
 Read '$8,714.97' from cell "$8,714.97".
 *Rationale: Extract the savings balance ($8,714.97) for member 10001 as required by the goal.*

@@ -1,261 +1,361 @@
-# Architecture — Computer-Use Automation System
+# Architecture
 
-## 1. Context & Goals
+How the system is put together, and why each piece sits where it does.
 
-This system gives an AI agent the ability to operate back-office applications that expose no
-API — the common case at banks and credit unions, where the only reliable interface is the one a
-human operator sees and uses. It runs in two modes.
-
-**Discovery** is an LLM-driven loop that observes a live UI, decides what to do, and acts, until a
-goal is reached. It is used the first time a given capability is needed, and only then.
-
-**Replay** executes a successful discovery run's recorded steps directly, with no LLM in the
-decision loop, against stable element targeting. This is the path an AI agent actually invokes in
-production: cheaply, deterministically, and without re-reasoning about the UI on every call.
-
-The guiding principle throughout the design: the model discovers once, the artifact it produces
-becomes a reusable capability, and deterministic replay is how that capability is invoked
-thereafter.
+The companion documents are [`REPORT.md`](REPORT.md), which argues the design decisions, and
+[`README.md`](README.md), which is the guide to running it.
 
 ---
 
-## 2. System Architecture
+## 1. What the system does
+
+An AI agent needs to use a business application that has no API. The only way in is the
+screens a human operator uses.
+
+This system solves that once per task, then stops paying for it:
+
+1. **Discovery.** An LLM is given a URL and a goal written in plain language. It looks at the
+   live screen, decides one action, takes it, and looks again, until the goal is reached.
+2. **Recording.** The successful run is compiled into a **capability artifact**: a typed,
+   versioned JSON contract describing the steps, the inputs it takes and the values it
+   returns.
+3. **Replay.** From then on the artifact is executed directly. No model is involved, the cost
+   is a page load, and the behaviour is the same every time.
+
+The engine knows nothing about any particular application. Nothing under `engine/` names a
+screen, a route or a field. Point it at a different application and none of the code changes.
+
+---
+
+## 2. Components
 
 ```mermaid
 flowchart TB
-    LLM[LLM API<br/>External]
-    Agent[AI Agent caller]
-    Human[Human operator]
+    Caller["AI agent or operator<br/>(CLI)"]
+    LLM["LLM API<br/>(Gemini)"]
+    Human["Human operator"]
+    App["Target application<br/>(browser today, desktop later)"]
 
-    Agent --> API
+    Caller --> API
 
-    subgraph Boundary["System boundary — single process, v1"]
-        API[Capability API / CLI]
-        API --> Intent[Intent Parser<br/>Goal → ordered capability plan]
-        Intent -.calls.-> LLM
-        API --> Discovery[Discovery Engine<br/>LLM loop + policy gate]
-        API --> Replay[Replay Engine<br/>No LLM; deterministic]
-        API --> Escalation[Escalation Service<br/>Pause, handoff, resume]
+    subgraph Engine["engine/ : one Python process"]
+        API["Capability API / CLI<br/>discover · replay · run · learn-outcome"]
+        Intent["Intent Parser<br/>sentence to ordered plan"]
+        Discovery["Discovery Engine<br/>observe, decide, act"]
+        Replay["Replay Engine<br/>no LLM in this path"]
+        Policy["Policy Gate<br/>allowlist + risk class"]
+        Recorder["Recorder<br/>trace to artifact"]
+        KB["Knowledge Base<br/>what we know about this app"]
+        Learner["Outcome Learner<br/>names a new state once"]
+        Escalation["Escalation Service<br/>pause, hand over, resume"]
+        Reports["Report Generator<br/>+ redaction boundary"]
+        Surface["Surface<br/>observe, click, type, navigate, read"]
 
-        Discovery -.calls.-> LLM
-        Escalation -.notifies.-> Human
+        API --> Intent
+        API --> Discovery
+        API --> Replay
+        API --> Learner
 
-        Discovery --> KB[Knowledge Base<br/>Lookup + write-back]
-        Discovery --> Recorder[Recorder<br/>Compiles trace]
-        Discovery --> ReportGen[Report Generator]
-        Replay --> ReportGen
-
-        KB --> KBStore[(KB Store)]
-        Recorder --> ArtifactStore[(Artifact Store)]
-        ReportGen --> EvidenceStore[(Evidence Store)]
-
-        Discovery --> Surface[Surface Interface<br/>Accessibility-tree abstraction]
+        Discovery --> Policy
+        Replay --> Policy
+        Discovery --> KB
+        Learner --> KB
+        Discovery --> Recorder
+        Discovery --> Escalation
+        Replay --> Escalation
+        Discovery --> Reports
+        Replay --> Reports
+        Discovery --> Surface
         Replay --> Surface
     end
 
-    Surface --> Target[Target application<br/>Browser today, desktop future]
+    Intent -. one call .-> LLM
+    Discovery -. one call per step .-> LLM
+    Escalation -. notifies .-> Human
+    Human -. acts in the same window .-> App
+    Surface --> App
+
+    Recorder --> Artifacts[("data/artifacts/")]
+    Replay --> Artifacts
+    KB --> KBStore[("data/kb/")]
+    Escalation --> EscStore[("data/escalations/")]
+    Reports --> Evidence[("evidence/")]
 ```
 
-Everything inside the system boundary runs as a single process, with no queues or separate
-services. The only external dependencies are the LLM API, the target application, and the human
-operator, each reached through a single, well-defined seam — the Surface Interface is the only
-component that drives the target application, and the Escalation Service is the only component
-that engages a human. The LLM is reached by two components and in two distinct shapes: the
-Discovery Engine's agent loop, which is the only model call that can cause an action against the
-target, and the Intent Parser's single stateless completion, which produces a plan and executes
-nothing. Both go through the same provider adapter, so there is still one integration path to the
-model API.
+Everything inside the box is one process. There are no queues and no services to deploy,
+because at this size every boundary that would matter later is already a module boundary.
 
-Storage is deliberately split into three stores rather than one, because each has a different
-write pattern and retention need. The **Artifact Store** holds capabilities, written once per
-successful discovery run and read on every replay. The **KB Store** holds the application's UI
-map — its screens, elements, and navigation edges — incrementally patched as drift is detected and
-shared across every artifact recorded against that application. The **Evidence Store** holds
-append-only logs and human-readable reports from every run, regardless of outcome.
+Three things are outside, and each is reached through exactly one component:
+
+| Outside the engine | Reached only by | Why that matters |
+|---|---|---|
+| The LLM API | Discovery Engine (a call per step) and Intent Parser (one call, no actions) | Replay can be shown to use no model by reading the imports. It runs with no API key. |
+| The target application | The `Surface` | Swapping browser for desktop touches one class, not the loop, the schema or replay. |
+| The human operator | The Escalation Service | One pause and resume mechanism, used by both modes. |
+
+Storage is split into four directories because each has a different write pattern:
+
+| Path | Holds | Written by |
+|---|---|---|
+| `data/artifacts/` | One JSON capability per file. Reviewable in a pull request. | Recorder, and the Outcome Learner when it patches one |
+| `data/kb/` | One JSON file per application: screens, elements, learned outcomes. | Discovery on every observation; the Outcome Learner |
+| `data/escalations/` | Open intervention requests. | Escalation Service |
+| `evidence/` | A report plus screenshots for every run, whatever the outcome. | Report Generator |
 
 ---
 
-## 3. Discovery Mode Flow
+## 3. Discovery mode
 
 ```mermaid
 flowchart TD
-    Goal[Goal + target app] --> Observe
+    Start["Goal in plain language + target URL"] --> Nav["Navigate to the target"]
+    Nav --> Observe
 
-    subgraph Discovery["Discovery mode (LLM in the loop)"]
-        Observe[Observe] --> Decide[Decide]
-        Decide --> Gate[Policy gate]
-        Decide <--> KB[(Knowledge base)]
-        Gate --> Safe[Safe / reversible<br/>Auto-executes]
-        Gate --> Risky[Risky / irreversible<br/>Needs approval]
-        Safe -->|continues loop| Observe
-    end
+    Observe["Observe<br/>accessibility tree to a numbered element list"] --> Record["Record what is on screen in the KB"]
+    Record --> Guard{"Loop Guard<br/>step budget, timeout,<br/>repeated screen?"}
+    Guard -->|stuck| Stop["Stop and report why"]
+    Guard -->|continue| Decide
 
-    Risky --> Escalate
+    Decide["Decide<br/>one LLM call, must pick from the listed ids"] --> Ground{"Grounding check<br/>is that element still there?"}
+    Ground -->|no| Observe
+    Ground -->|yes| Gate{"Policy Gate"}
 
-    subgraph Handoff["Escalation & handoff (shared)"]
-        Escalate[Escalate<br/>Pause + context] --> HumanCtrl[Human control<br/>Live session]
-    end
-    HumanCtrl -.resume: hand control back.-> Discovery
+    Gate -->|"off the allowlist"| Blocked["Refuse the action"]
+    Gate -->|"risky control"| Escalate["Escalate: pause for a human"]
+    Gate -->|safe| Act["Act through the Surface"]
+    Escalate -->|human acts, presses Enter| Observe
 
-    Safe -->|goal checkpoint met| Recorder[Recorder]
-    Recorder --> ArtifactStore[(Artifact store)]
-    ArtifactStore --> ReplayEngine[Replay engine<br/>No LLM]
-    ReplayEngine --> Result[Structured result<br/>Success / outcome / failure]
-    Result -.unrecoverable.-> Escalate
+    Act --> Done{"Goal reached?"}
+    Done -->|"no"| Observe
+    Done -->|"yes, and any required value was extracted"| Recorder
 
-    Recorder --> ReportGen[Report Generator]
-    ReplayEngine --> ReportGen
-    ReportGen --> Evidence[Evidence & structured logs]
+    Recorder["Recorder: compile the trace"] --> Artifact[("Capability artifact")]
+    Stop --> Report
+    Blocked --> Report
+    Artifact --> Report["Report + screenshots in evidence/"]
 ```
 
-Observe, decide, and the policy gate together form the entire discovery engine; there is no
-separate code path for unattended execution. A goal that only touches safe, reversible actions
-simply never trips the gate's human-approval branch and therefore runs unattended by construction,
-rather than by a distinct "auto mode."
+Points worth knowing:
 
-Escalation is shared infrastructure, fed from two places: the policy gate during discovery, and
-the replay engine when it encounters a condition it was not recorded to handle. Both route through
-the same pause, hand-off, and resume mechanism rather than duplicating it.
-
-The Report Generator fires on every run outcome — success, business outcome, escalation, or hard
-failure — not only on success as the Recorder does. A human reviewing a failed or escalated run
-needs the narrated, screenshot-backed report precisely when something went wrong.
-
----
-
-## 4. Observation & Signal Sources
-
-Each call to Observe gathers three distinct signals, chosen to cover different failure modes of
-legacy enterprise markup rather than redundantly repeating the same information.
-
-| Signal | Primary use | Where it falls short |
-|---|---|---|
-| Accessibility tree (role, accessible name, value, state) | Source of the enumerated, ID-tagged action list the Decide step is constrained to; primary basis for locators | Legacy elements with no ARIA attributes or semantic HTML return an empty or generic name |
-| Screenshot | Visual disambiguation for icon-only or unlabeled controls; becomes the per-step evidence image in the run report | Cannot itself produce a stable locator; meaningful multimodal token cost if attached on every step |
-| Raw DOM | Last-resort locator construction (CSS selector or XPath) once an element has been identified by another signal | Brittle against layout change; too noisy to hand the LLM as reasoning context directly |
-
-The accessibility tree is not the same thing as a browser's DOM inspector. A DOM inspector exposes
-raw markup — tags, attributes, nesting — which is exactly the noisy layer this system treats as a
-fallback rather than a primary signal. The accessibility tree is a separate, browser-computed
-semantic layer intended for assistive technology, built from a mix of HTML semantics, ARIA
-attributes, and heuristics; it is what the grounding logic and the locator strategy are built on
-top of.
-
-This layered approach is a direct response to inconsistent naming conventions in legacy
-applications: a well-labeled element is captured cheaply and reliably by the accessibility tree
-alone, while an unlabeled, icon-only control falls back to visual identification via screenshot,
-with the raw DOM used only to construct a workable locator once the correct element has been
-identified by one of the other two signals. A reasonable optimization for later iterations, noted
-but not required for the initial implementation, is to attach a screenshot only when the
-accessibility tree is ambiguous — for example, multiple elements of the same role with no
-distinguishing name — rather than on every step unconditionally.
+* **The model never invents a target.** Each observation hands it a numbered list of elements
+  taken from the accessibility tree, and the tool schema for that turn only accepts ids from
+  that list. A hallucinated element is rejected by the schema rather than by a prompt.
+* **The grounding check runs between deciding and acting.** Ids are reassigned every turn, so
+  the chosen element is confirmed to still be the same control before anything is clicked.
+* **The Loop Guard watches for a run that cannot converge**, using a step budget, a wall clock
+  timeout, and a hash of the screen to catch cycles. Typing and extracting do not contribute
+  to that hash, otherwise a form with several fields would look stuck after one keystroke.
+* **A goal that asks for a value must produce one.** If the model says it is finished without
+  having extracted the value the goal names, the loop refuses once and says why. If it insists,
+  the run still completes and the Recorder flags the artifact.
+* **Secrets never reach the model.** The model sees the placeholder `{{password}}`. The real
+  value is substituted inside the Surface call, at the keyboard.
 
 ---
 
-## 5. Design Decisions & Trade-offs
+## 4. Replay mode
 
-| Decision | Rationale | Trade-off accepted |
+```mermaid
+flowchart TD
+    Call["capability_id + parameters"] --> Validate{"Parameters valid?"}
+    Validate -->|no| Hard
+    Validate -->|yes| Prereq{"Prerequisites in 'requires'"}
+    Prereq -->|"replay each one first"| Prereq
+    Prereq -->|"one failed"| Hard
+    Prereq -->|ok| Step
+
+    Step["Next step: resolve the locator<br/>primary role+name, then fallbacks in order"] --> Resolved{"Resolved?"}
+    Resolved -->|no| Hard
+    Resolved -->|yes| Do["Act through the Surface<br/>record which strategy worked"]
+    Do --> Known{"Does the screen match<br/>a known outcome?"}
+    Known -->|"business outcome"| Business
+    Known -->|recoverable| Recover
+    Known -->|"no match"| More{"More steps?"}
+    More -->|yes| Step
+    More -->|no| Check{"Checkpoint holds?"}
+
+    Check -->|yes| Success["success<br/>outputs returned"]
+    Check -->|no| Hard
+
+    Business["business_outcome"]
+    Recover["recoverable"]
+    Hard["hard_failure"]
+
+    Success --> Result["RunResult + report"]
+    Business --> Result
+    Recover --> Result
+    Hard --> Notify["Escalate to a human,<br/>with candidate detectors"] --> Result
+```
+
+**The four statuses are the contract.** Collapsing them into true or false throws away exactly
+what the caller needs in order to decide what to do next.
+
+| Status | Meaning | What the caller does |
 |---|---|---|
-| Single process, no queues or separate services | Matches the brief's explicit preference against premature scaling infrastructure | Will not horizontally scale without rework; acceptable for an initial implementation |
-| Accessibility-tree locators (`role + name`) as primary, CSS as last-resort fallback | Legacy enterprise UIs commonly lack test IDs; roles and accessible names survive layout churn that selectors do not | Requires the target surface to expose a usable accessibility tree |
-| Artifacts carry their own locators today, with `kb_element_id` reserved as the seam for moving them into the Knowledge Base later | A self-contained artifact is reviewable in a pull request on its own, which is what the capability library needs first; the nullable reference keeps the door open to a shared element registry, where a single drift fix would propagate to every artifact using that element instead of requiring each to be re-recorded | **Not built.** `kb_element_id` is null on every recorded step and the Replay Engine only consults the KB when it is set, so a locator fix is currently per-artifact. The cost of deferring is re-recording; the cost of building it early is an indirection with one user |
-| Known outcomes (business outcome / recoverable / hard failure) are learned once per **application** in the Knowledge Base, then copied onto each artifact that is taught them | A session timeout is a fact about the app, not about one capability, so naming it once is right; but an artifact is a frozen contract, and silently changing what a reviewed capability detects would defeat the point of freezing it. So the KB is the source of truth for new recordings, and an existing capability is patched explicitly, with a version bump | Shared failure modes are duplicated into every artifact that knows them, and an artifact recorded before an outcome was learned does not pick it up until someone patches it by name |
-| Playwright with the accessibility-snapshot API, behind a `Surface` abstraction | Strongest web automation option available today; the `Surface` interface is the seam that allows a desktop driver to be introduced later without touching the agent loop, artifact schema, or replay engine | Desktop support remains a design answer rather than a built implementation, consistent with the brief's scope |
-| Grounding check positioned between Decide and the Policy Gate | Constrains the LLM to an enumerated, schema-validated action list resolved against live state, addressing the most common class of hallucination at the schema level rather than through prompting alone | Adds one verification step per action |
-| Step budget, timeout, and state-hash cycle detection (Loop Guard) | Addresses runaway or cyclical behavior as a distinct failure mode from hallucination, since even a fully grounded agent can fail to converge | Hard limits may terminate a genuinely long legitimate flow; tunable per capability if this proves necessary |
-| Target application: a self-built, legacy-styled mock rather than a public sandbox | The only reliable way to trigger the specific business-outcome, recoverable, and hard-failure conditions the replay engine is evaluated against | No validation against a real vendor product; accepted given the brief's prohibition on accessing a real bank system |
-| Optimization review kept manual and offline, described in Section 5.1, rather than automated into the pipeline | Preserves token and cost efficiency by not running a second LLM pass on every discovery run | Artifacts are not guaranteed to be optimal unless a human actively invokes the review |
+| `success` | Every step ran and the checkpoint held. | Use the returned outputs. |
+| `business_outcome` | The application correctly said no. | Treat it as an answer. "No such member" is a result, not a crash. |
+| `recoverable` | Something transient interrupted the run, such as an expired session. | Retry, after replaying a prerequisite if the hint says so. |
+| `hard_failure` | A state the artifact was never recorded to handle. | Stop. A human looks at it. |
 
-### 5.1 Optimization Review
+**Locators are a ranked list.** Each step tries `role+name` first, because a role and an
+accessible name survive markup changes, and falls back to a CSS selector only if that fails.
+Replay records which strategy resolved each step, so a capability that starts relying on
+fallbacks is visibly drifting before it breaks.
 
-Reaching a goal and reaching it by the most efficient path are not the same thing, particularly
-early in an application's lifecycle, when the Knowledge Base is still sparse and discovery must
-explore largely blind. Automating a second LLM pass to check every discovery run for optimality
-would consume tokens in the pursuit of saving tokens, so this capability is intentionally excluded
-from the automated pipeline and does not appear in the architecture diagrams above.
+**Prerequisites are capabilities, not a session mechanism.** An artifact that declares
+`requires: ["operator_login"]` causes that capability to be replayed first, with parameters
+passed through by name. Signing on is something the system discovered and recorded, exactly
+like everything else.
 
-Instead, it is an optional, human-triggered review run against an already-completed artifact. The
-review sends the full discovery trace — including any backtracking trimmed from the final recorded
-path — to the LLM with a critique prompt rather than a task-completion prompt, and re-evaluates the
-path against the Knowledge Base as it stands at review time rather than as it stood when the
-artifact was originally recorded. A capability recorded early in an application's lifecycle may
-have taken a longer route simply because a shorter one had not yet been discovered by a later
-capability; this review surfaces that gap. It also compares LLM-call count against step count,
-since a high ratio of calls to steps signals noisy grounding even when the final recorded artifact
-appears clean.
+---
 
-The output is a note, not an automatic edit:
+## 5. The capability artifact
 
-```json
-"review": {
-  "status": "not_reviewed",
-  "optimization_notes": null,
-  "reviewed_at": null
+One JSON file per capability. It is a contract, so a calling agent can decide whether to
+invoke it by reading the artifact alone.
+
+```jsonc
+{
+  "capability_id": "lookup_member_and_get_savings_balance",
+  "version": "1.0.0",
+  "status": "draft",                       // draft or approved; approval gates unattended use
+  "target_app": { "app_id": "127.0.0.1_5050", "surface_type": "web" },
+  "requires":   ["operator_login"],        // other capabilities, replayed first
+  "input_params": [ { "name": "member_id", "type": "string", "secret": false } ],
+  "outputs":      [ { "name": "savings_balance", "type": "currency", "source_step": "s4" } ],
+  "steps": [
+    { "step_id": "s3", "action": "click", "risk_class": "safe",
+      "target": { "locator": {
+        "primary":   { "strategy": "role+name", "value": "link:{{member_id}}" },
+        "fallbacks": [ { "strategy": "css", "value": "…" } ] } } }
+  ],
+  "checkpoint": { "type": "element_present_with_pattern",
+                  "pattern": "^[$€£]?[0-9,]+\\.[0-9]{2}$" },
+  "known_outcomes": [ /* learned later; see section 6 */ ],
+  "provenance": { "created_from_run": "discovery_…" }
 }
 ```
 
-A human reads the note and decides whether re-recording is warranted. This sits outside the
-draft-to-approved gate entirely: an artifact can be approved and used in production without ever
-having been reviewed for optimality. It is a cost-hygiene tool for maintaining the artifact
-library over time, not a correctness requirement.
+Three properties make it reusable rather than a macro:
+
+* **Caller values are templated out.** During discovery the result link was literally named
+  `10001`. Stored that way, the capability would only ever work for one member. Substituting
+  `{{member_id}}` back in makes the step mean "the member the caller named".
+* **Outputs are named and typed.** A capability that navigates correctly but returns nothing
+  is a script. The output name is chosen by the model at the moment it reads the value, which
+  is the only point where the meaning of a table cell is known.
+* **The checkpoint asserts a shape, not an answer.** Storing `$8,714.97` would fail the moment
+  a balance changed. Storing the element plus a regular expression for its shape is a claim
+  about future runs.
+
+Routes are stored relative, never with a host, so the same artifact replays against another
+deployment of the same application.
 
 ---
 
-## 6. Data Flow & Integration Points
+## 6. How the system learns what failure looks like
 
-Three external dependencies exist, each reached through exactly one component. The LLM API is
-called only by the Discovery Engine, and only during the Decide step; the Replay Engine never
-calls it. The target application is driven exclusively through the Surface Interface; no other
-component addresses it directly. The human operator is engaged only through the Escalation
-Service, which owns the pause, hand-off, and resume of the live session.
+A discovery run only ever walks the success path, because it stops when the goal is met. So it
+cannot observe how an application refuses. Those states are learned instead:
 
-For a plain-language goal, the flow runs from the caller through the Capability API to the Intent
-Parser, which is handed the Artifact Store's catalog and returns an ordered list of capability
-calls — which capability, in what order, with which parameters, and whether each one already
-exists. The plan is printed and confirmed before anything is executed, and execution then follows
-one of the two flows below per call: a capability already in the Artifact Store is replayed, and
-only one that is not is discovered. The parser proposes; it never drives the target application
-itself.
+```mermaid
+flowchart LR
+    A["Replay meets an unfamiliar screen"] --> B["hard_failure<br/>+ suggested detectors,<br/>record ids stripped"]
+    B --> C["Human runs learn-outcome<br/>and names it once"]
+    C --> D["Knowledge Base stores it<br/>against the application"]
+    D --> E["New recordings inherit it"]
+    D --> F["Named capabilities are patched,<br/>with a version bump"]
+    F --> G["Same input now returns<br/>a clean business_outcome"]
+```
 
-For a new goal, the flow runs from the AI Agent through the Capability API to the Discovery
-Engine, which consults the Knowledge Base for guidance, passes every proposed action through the
-Policy Gate, and acts through the Surface Interface. A successful run reaches the Recorder and is
-written to the Artifact Store, with a parallel write to the Report Generator regardless of
-outcome.
+The first encounter being a hard failure is the design. The system has genuinely never seen
+that state, and guessing that an unfamiliar red banner means "routine" rather than "the
+database is down" is exactly the judgement it should not make on its own. The committed
+evidence in `evidence/submission/06` and `07` shows the same input on either side of that
+line.
 
-For a known capability, the flow runs from the AI Agent through the Capability API to the Replay
-Engine, which reads the artifact from the Artifact Store and executes it through the Surface
-Interface, producing a structured result. The Replay Engine escalates through the shared
-Escalation Service only when it encounters a condition the artifact was not recorded to handle.
-
-A redaction boundary sits ahead of both the Evidence Store and the Report Generator: screenshots
-are passed through a redaction filter before being written, so the Report Generator only ever
-reads already-redacted images. The Knowledge Base stores structural information only — roles,
-labels, and locators — and never the underlying data values, account numbers, or names observed
-on screen.
+An existing artifact is patched by name and its version is bumped, never edited silently,
+because an artifact is a frozen contract and a reviewed capability should not quietly change
+what it detects.
 
 ---
 
-## 7. Requirements Traceability
+## 7. Safety
 
-The following maps this design against Section 3 of the take-home brief.
+**The allowlist** is derived from the URL the operator aimed the run at, plus anything they
+widened it to in the policy file. It is checked before every navigation in **both** modes.
+Checking it during replay matters more than it looks: an artifact is data, it can be edited or
+copied between environments, and replay is the mode that runs unattended.
 
-| Requirement | Design element |
-|---|---|
-| 3.1 — Goal-driven agent loop, observe → decide → act against a live surface | Discovery Engine, Section 3 |
-| 3.1 — Mechanism functions without a clean DOM | Surface Interface's accessibility-tree abstraction, Section 4 |
-| 3.2 — Structured, typed, versioned artifact | Artifact schema — ordered steps, typed inputs and outputs, checkpoint |
-| 3.2 — Locator identification with robustness reasoning | Knowledge-Base-backed `role + name` primary locator with a fallback chain, Section 5 |
-| 3.3 — Deterministic replay with no LLM in the decision loop | Replay Engine, Sections 2–3 |
-| 3.3 — Three-way outcome split: business outcome, recoverable, hard failure | `known_outcomes` field in the artifact schema |
-| 3.4 — Allowlist enforcement | Policy Gate, Section 3 |
-| 3.4 — Conservative handling of risky or irreversible actions | Policy Gate risk classification and the Safe / Risky branches |
-| 3.4 — No secrets or raw PII persisted | Redaction boundary, Section 6 |
-| 3.5 — Structured log of agent actions and rationale | Evidence Store and Report Generator, Sections 2–3 |
-| 3.5 — Richer signal on failure | Report Generator's per-step screenshots with highlighted elements |
-| 3.6 — Detection of stuck states and routed intervention with context | Escalation Service, triggered from the Policy Gate and the Replay Engine |
-| 3.6 — Human control of the same live session, with hand-back | Escalation & Handoff subsystem, Section 3 |
-| 3.7 — Surface abstraction extensible to legacy web and desktop | The `Surface` interface seam, Section 5 (addressed as design, per the brief's scope) |
-| 3.7 — Multi-tenant reuse without per-tenant rebuilds | Knowledge Base keyed by application template rather than tenant, with per-element overrides on drift |
-| Hallucination mitigation | Grounding check between Decide and the Policy Gate, Section 5 |
-| Infinite-loop mitigation | Loop Guard — step budget, timeout, and state-hash cycle detection, Section 5 |
+**Risk classification is written in plain English and applies to any application.** A control
+is risky if its accessible name contains a word like `confirm`, `submit`, `delete`, `approve`
+or `transfer`. These are properties of interface vocabulary, so the list carries across a
+banking console, a claims system and a hospital admin tool. A short list of exemptions is
+checked first, so "Submit search" does not pause.
+
+A risky control pauses for a human **during discovery**. During **replay** it is allowed,
+because it was reviewed when the artifact was approved. The gate is the move from `draft` to
+`approved`, not every execution, otherwise no capability that writes anything could ever run
+unattended.
+
+**Secrets** are passed as parameter names to the model and substituted at the keyboard. A
+credential never appears in an API request, a trace, an artifact or a report.
+
+**Redaction** is a real boundary: every screenshot is written through one function, so
+production masking is one implementation rather than an audit of every call site. In this
+repository that function is the identity function, because every record in the sample
+application is invented.
+
+---
+
+## 8. Escalation and handoff
+
+A run stops for a human in three cases: the Policy Gate meets a risky control, the Loop Guard
+decides the run cannot converge, or a replay ends in `hard_failure` or `recoverable`.
+
+The Escalation Service writes an `InterventionRequest` holding the capability, the goal, the
+current step, the reason, and a redacted screenshot. It prints that context and blocks.
+
+**The handover is real rather than simulated.** The browser runs visible by default, so the
+window the agent was driving is the window the human takes over. There is no second session to
+synchronise and no cookie transfer, because there is only one session. When the human presses
+Enter, the run resumes by observing the screen again rather than assuming, since they may
+legitimately have navigated somewhere unexpected. What they did is recorded in the evidence.
+
+What is deliberately minimal is the operator's view: a console summary and a screenshot path
+rather than a web console.
+
+---
+
+## 9. What the Surface sees
+
+Each observation gathers three signals, chosen because they fail in different ways.
+
+| Signal | Used for | Where it falls short |
+|---|---|---|
+| Accessibility tree: role, accessible name, value, state | The numbered element list the model must choose from, and the primary locator | A legacy element with no ARIA and no semantic HTML returns an empty or generic name |
+| Screenshot | Telling apart controls that carry only an icon, and the evidence image for each step | Cannot produce a stable locator by itself, and costs tokens on every step |
+| Raw DOM | Building a CSS fallback locator once the right element is already identified | Brittle against layout change, and too noisy to hand the model as context |
+
+The accessibility tree is not the DOM. It is a semantic layer the browser computes for
+assistive technology, out of HTML semantics, ARIA attributes and heuristics. It is what a
+screen reader consumes, it exists on desktop platforms too through UIA, AX and AT-SPI, and it
+survives markup churn that CSS selectors do not. That is why it is the primary signal and CSS
+is only a fallback.
+
+---
+
+## 10. Decisions and the costs accepted
+
+| Decision | Why | Cost accepted |
+|---|---|---|
+| One process, no queues or services | The brief prefers a working system over scaling infrastructure, and every seam that would matter later is already a module boundary | It will not scale horizontally without rework |
+| Perception through the accessibility tree, CSS as fallback | Legacy enterprise screens rarely carry test ids, and roles and names survive redesigns | A surface with no usable tree, such as an application rendered as pixels, needs a new Surface built on OCR and vision |
+| Discovery and replay as two engines, not one engine with a flag | "No model in production" is verifiable by reading the imports rather than trusting a branch | A little duplication in setup code |
+| The engine knows nothing about any application | It can be pointed at anything, and a prompt describing one product's screens would need rewriting for the next | The system starts cold, so the first encounter with any refusal is a hard failure |
+| Each artifact carries its own locators, with `kb_element_id` reserved for a shared registry | An artifact that stands alone can be reviewed on its own, which is what a capability library needs first | One element drifting is fixed once per artifact instead of once for all of them |
+| Known outcomes learned once per application, then copied onto artifacts by name | A session timeout is a fact about the application, not about one capability | An artifact recorded before an outcome was learned does not pick it up until someone patches it |
+| Playwright behind a `Surface` interface | Strongest option for the web today, and the interface is the seam a desktop driver would use | Desktop support is a design answer, not a running one |
+| A sample application built for this system rather than a public sandbox | It is the only reliable way to trigger the exact refusals and failures replay is judged on | No validation against a real vendor product |
+| No tenant dimension in the schema | Building plumbing for many tenants into a demo that has one is premature | Reuse across tenants is argued in `REPORT.md`, not demonstrated |
+| Review for a shorter path kept manual and offline | A second model pass on every run would spend tokens to save tokens | Artifacts are not guaranteed to be the shortest route unless a human asks for the review |

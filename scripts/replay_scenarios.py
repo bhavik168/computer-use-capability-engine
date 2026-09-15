@@ -139,7 +139,7 @@ def main() -> int:
             check("an expired session is recoverable, not a business outcome",
                   BALANCE, {"member_id": "10001"}, "recoverable")
         else:
-            print("[SKIP] session-expiry scenario — restart the target app with "
+            print("[SKIP] session-expiry scenario: restart the target app with "
                   "SESSION_TIMEOUT_SECONDS=1 and set it here too to run it")
 
         print("\nAll scenarios passed." if not failures else f"\n{failures} scenario(s) failed.")

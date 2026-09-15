@@ -362,7 +362,7 @@ class DiscoveryEngine:
                 step_id, action, rationale, url_before, element=element, locator=locator,
                 risk_class="risky", verified=False,
                 verification_note="halted for human approval; not executed",
-                description=f"Paused before {element.role} \"{element.name}\" — needs approval",
+                description=f"Paused before {element.role} \"{element.name}\" (needs approval)",
             )
             trace.steps.append(step)
             return StepOutcome(False, f"Halted: {reason}", terminal=True), None

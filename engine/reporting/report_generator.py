@@ -47,7 +47,7 @@ class ReportGenerator:
         steps = [
             NormalizedStep(
                 index=i + 1,
-                title=f"{step.action} — {step.element_name or step.url_value or ''}".strip(" —"),
+                title=f"{step.action}: {step.element_name or step.url_value or ''}".strip(" :"),
                 description=step.description or step.action,
                 rationale=step.rationale,
                 locator_note=step.locator_value(),
@@ -72,7 +72,7 @@ class ReportGenerator:
         steps = [
             NormalizedStep(
                 index=i + 1,
-                title=f"{log_entry.action} — {log_entry.step_id}",
+                title=f"{log_entry.action}: {log_entry.step_id}",
                 description=log_entry.description,
                 rationale=None,  # replay has no LLM rationale to show, by construction
                 locator_note=log_entry.locator_strategy,
@@ -112,7 +112,7 @@ class ReportGenerator:
         shots.mkdir(parents=True, exist_ok=True)
 
         lines = [
-            f"# Run report — {outcome_summary.get('heading', run_id)}",
+            f"# Run report: {outcome_summary.get('heading', run_id)}",
             "",
             f"**Run id:** `{run_id}`  ",
             f"**Goal:** {outcome_summary.get('goal', '')}  ",
@@ -141,7 +141,7 @@ class ReportGenerator:
             lines.append(step.description + ".")
             if step.rationale:
                 lines.append(f"*Rationale: {step.rationale}*")
-            locator = step.locator_note or "—"
+            locator = step.locator_note or "n/a"
             lines.append(
                 f"Locator: {locator} · Verified: {'✓' if step.verified else '✗'}"
                 + (f" · URL: `{step.url}`" if step.url else "")
@@ -171,7 +171,7 @@ _STATUS_ICONS = {
 
 def _replay_outcome(result) -> str:
     label = _STATUS_ICONS.get(result.status, result.status)
-    return f"{label}" + (f" — `{result.outcome_code}`" if result.outcome_code else "")
+    return f"{label}" + (f": `{result.outcome_code}`" if result.outcome_code else "")
 
 
 def _replay_result(result) -> str:

@@ -1,4 +1,4 @@
-# Run report — Sign on to the console as the supplied operator
+# Run report: Sign on to the console as the supplied operator
 
 **Run id:** `discovery_20260915T035518_65dd5f`  
 **Goal:** Sign on to the console as the supplied operator  
@@ -7,19 +7,19 @@
 
 ## Steps
 
-### 1. type — Username
+### 1. type: Username
 ![screenshot](screenshots/step1.png)
 Typed {{username}} into textbox "Username".
 *Rationale: Enter the supplied username into the username textbox.*
 Locator: textbox:Username · Verified: ✓ · URL: `http://127.0.0.1:5050/login`
 
-### 2. type — Password
+### 2. type: Password
 ![screenshot](screenshots/step2.png)
 Typed {{password}} into textbox "Password".
 *Rationale: Enter the supplied password into the password textbox.*
 Locator: textbox:Password · Verified: ✓ · URL: `http://127.0.0.1:5050/login`
 
-### 3. click — Log In
+### 3. click: Log In
 ![screenshot](screenshots/step3.png)
 Clicked button "Log In".
 *Rationale: Click the Log In button to submit the login form.*

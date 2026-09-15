@@ -1,181 +1,178 @@
-# Computer-Use Capability Engine
+# Computer Use Capability Engine
 
-An automation system that lets an AI agent operate back-office applications that expose no
-API — the common case at banks and credit unions, where the only reliable interface is the
-one a human operator sees and uses.
+An AI agent needs to use a business application that has no API. The only way in is the screens
+a human operator uses.
 
-It runs in two modes. **Discovery** is an LLM-driven observe → decide → act loop that
-explores a live UI until a goal is reached, and compiles the successful run into a typed,
-versioned *capability artifact*. **Replay** executes that artifact deterministically, with
-no LLM anywhere in the decision loop. The model discovers once; the artifact it produces
-becomes a reusable capability, and deterministic replay is how that capability is invoked
-thereafter — cheaply, repeatably, and without re-reasoning about the UI on every call.
+This system solves that once per task, then stops paying for it. **Discovery** gives an LLM a
+URL and a goal in plain language; it observes the live screen, takes one action, looks again,
+and keeps going until the goal is met. The successful run is compiled into a **capability
+artifact**, a typed and versioned JSON contract. **Replay** then executes that artifact with no
+model anywhere in the decision path, for the cost of a page load, the same way every time.
 
-Design rationale, trade-offs and requirements traceability: [`ARCHITECTURE.md`](ARCHITECTURE.md)
-and [`REPORT.md`](REPORT.md).
+The engine knows nothing about any particular application. It gets a URL and a sentence.
 
-## What the engine is told, and what it works out
+* How it is built: [`ARCHITECTURE.md`](ARCHITECTURE.md)
+* Why it is built that way: [`REPORT.md`](REPORT.md)
+* Committed proof that it runs: [`evidence/submission/`](evidence/submission)
 
-It is told two things: a **URL** and a **goal in plain language**. Nothing else. There is no
-profile, no site map, no list of screens, no description of the login form, no catalogue of
-what "not found" looks like on this particular system. If a goal needs a session, the agent
-finds the sign-on controls in the accessibility tree and operates them like any other
-control — authentication is a capability that gets discovered and recorded, not a feature of
-the engine.
+---
 
-Everything the system comes to know about an application it learned from a run:
+## Running it: the exact steps
 
-| Knowledge | Where it comes from |
-|---|---|
-| Which screens exist, what is on them | Recorded into the KB on every `observe()` during discovery. |
-| How to reach a goal | Discovered once by the LLM, frozen into an artifact. |
-| How to identify a control | Built at act time from the accessibility tree, with a DOM path as fallback. |
-| What "no such record" looks like | **Learned.** The first time a replay meets it, it is a hard failure; a human names it; the KB remembers it for that application. |
-| What must not be clicked without a human | Operator policy — generic English verbs (`confirm`, `delete`, `approve`…), not app-specific strings. |
+You need Python 3.11 or newer and two terminals. A model key is needed only for step 5.
 
-Point it at a different application, or a different domain entirely, and none of that changes.
-
-## Layout
-
-| Path | What it is |
-|---|---|
-| `engine/` | The capability engine. **Contains no knowledge of any application.** |
-| `engine/policy/defaults.yaml` | Operator safety policy. Application-agnostic; override with `--policy`. |
-| `target_app/` | CoreBank Servicing Console — a legacy-styled Flask app used as *a* target. Swappable. |
-| `data/artifacts/` | The capability catalogue — every artifact here was produced by a real discovery run. Committed, because it is what a reviewer reads to judge the schema. |
-| `data/kb/`, `data/escalations/` | What the system has learned about an application, and open intervention requests. Machine-local; empty on a fresh checkout. |
-| `scripts/intent_scenarios.py` | Offline checks for the intent parser: plan validation, replay-vs-discover, secret redaction. No browser, no model. |
-| `scripts/replay_scenarios.py` | Every branch of the replay result contract, against a live browser. Runs hermetically. |
-| `evidence/submission/` | The committed end-to-end demonstration: discovery, replay, an error state, and an escalation. |
-| `evidence/discovery_runs/`, `evidence/replay_runs/` | Where your own runs land. Gitignored scratch; empty until you run something. |
-
-## Setup
-
-**1. Stand up the target app** (its own instructions are in
-[`target_app/README.md`](target_app/README.md)):
+### Step 1. Start the sample application (terminal 1)
 
 ```bash
-cd target_app && ./run.sh          # serves CoreBank on http://127.0.0.1:5050
+cd target_app
+./run.sh
 ```
 
-**2. Install the engine**, from the repository root:
+It creates its own virtual environment, installs Flask, and serves the Member Servicing
+Console on <http://127.0.0.1:5050>. Leave it running. Sign on by hand if you want a look
+around: `operator1` / `pass123`.
+
+### Step 2. Install the engine (terminal 2, at the repository root)
 
 ```bash
 python3 -m venv .venv
 .venv/bin/pip install -r requirements.txt
-.venv/bin/playwright install chromium      # one-time browser download
-
-cp .env.example .env                       # then paste your key into .env
+.venv/bin/playwright install chromium
 ```
 
-`.env` is gitignored; `.env.example` is the committed template. Anything in it can equally be
-exported as a shell variable, and an exported value wins over the file — a value you set
-deliberately should not be overridden by a stale file on disk. Loading is done by
-`engine/config.py` (about 20 lines, no extra dependency) and happens once, in the CLI, before
-any command reads configuration.
+The last line downloads the browser Playwright drives. It is a one time download.
 
-Only `GEMINI_API_KEY` is required, and only for `discover`. **`replay` needs no key at all** —
-it never calls a model, which is the whole point of the record-once/replay-many split, and
-the easiest way to see that claim is true is that replay keeps working with the key removed.
-
-The model provider is Gemini, and the model is named by `GEMINI_MODEL` — required, with no
-default compiled in, so a retired model is refused at startup rather than mid-run. It is reached
-through one adapter, `engine/discovery/gemini_client.py`, behind the `LLMClient` seam in
-`engine/discovery/llm_client.py` — the discovery loop itself deals in provider-neutral
-`Decision` objects and never assembles a vendor's message format, so swapping providers is
-one file.
-
-The browser runs **non-headless by default** — the visible window is what a human takes
-control of during an escalation handoff. Set `ENGINE_HEADLESS=1` (or pass `--headless`) for
-unattended runs.
-
-Operator credentials default to `operator1` / `pass123`; override with `COREBANK_USERNAME`
-and `COREBANK_PASSWORD`.
-
-## Run it without a model key
-
-The capability catalogue in `data/artifacts/` is committed, and every artifact in it was
-produced by a real discovery run against the app in `target_app/`. So the whole replay half of
-the system — the production path — can be exercised with no `GEMINI_API_KEY` at all:
+### Step 3. Create your configuration file
 
 ```bash
-cd target_app && ./run.sh          # terminal 1
-.venv/bin/python -m engine.cli list-artifacts
-.venv/bin/python -m engine.cli replay --capability lookup_member_and_get_savings_balance \
-    --param member_id=10001 --param username=operator1 --param password=pass123
-# → Status  : success
-# → Outputs : {"savings_balance": "$8,714.97"}
+cp .env.example .env
 ```
 
-Change `member_id` and the answer changes with it — the recorded locator is
-`link:{{member_id}}`, not the member discovery happened to be pointed at.
+`.env` is gitignored. Anything in it can also be exported as a normal shell variable, and an
+exported value wins over the file.
 
-The committed artifacts ship **cold**: `known_outcomes` is empty, because a discovery run only
-ever walks the success path and so cannot observe how an application fails. Teaching it is
-what the demo below shows.
+| Setting | Needed for | Default |
+|---|---|---|
+| `GEMINI_API_KEY` | `discover` and `run` only | empty, get one at <https://aistudio.google.com/apikey> |
+| `GEMINI_MODEL` | `discover` and `run` only | `gemini-3.5-flash-lite` |
+| `ENGINE_TARGET` | `replay` and `run`, unless you pass `--target` | `http://127.0.0.1:5050` |
+| `ENGINE_HEADLESS` | set to `1` to hide the browser window | unset, so the window is visible |
+| `COREBANK_USERNAME`, `COREBANK_PASSWORD` | the sample application's operator | `operator1` / `pass123` |
 
-## Demo path
+Leave `ENGINE_HEADLESS` unset for a first run. The visible window is the point: it is what a
+human takes control of during an escalation.
+
+### Step 4. Replay a capability, with no model key at all
+
+Five artifacts are committed under `data/artifacts/`, and every one of them was produced by a
+real discovery run. So the production half of the system works immediately:
+
+```bash
+.venv/bin/python -m engine.cli list-artifacts
+
+.venv/bin/python -m engine.cli replay \
+    --capability lookup_member_and_get_savings_balance \
+    --target http://127.0.0.1:5050 \
+    --param member_id=10001 --param username=operator1 --param password=pass123
+```
+
+A browser window opens, signs on, searches, opens the member and reads the balance:
+
+```
+Status  : success
+Outputs : {"savings_balance": "$8,714.97"}
+Report  : evidence/replay_runs/replay_lookup_member_and_get_savings_balance_.../report.md
+```
+
+Change `member_id` to `10006` and the answer changes with it, because the recorded locator is
+`link:{{member_id}}` rather than the member discovery happened to be pointed at. Try it:
+
+```bash
+.venv/bin/python -m engine.cli replay \
+    --capability lookup_member_and_get_savings_balance \
+    --target http://127.0.0.1:5050 \
+    --param member_id=10006 --param username=operator1 --param password=pass123
+```
+
+That the key is absent and this still works is the claim the whole design rests on.
+
+### Step 5. Discover a new capability (needs a model key)
+
+Put a working key in `.env`, then let the agent work out a goal it has never seen. It is told
+a URL and a sentence, nothing else:
 
 ```bash
 export ENGINE_TARGET=http://127.0.0.1:5050
 
-# 1. Discover how to sign on. The agent is given a URL and a sentence; it finds the form.
-#    --secret means the value is typed but never written to the artifact, logs or reports.
+# 5a. Discover how to sign on. Nobody told it there is a login form.
+#     --secret means the value is typed but never written to the artifact, logs or reports.
 .venv/bin/python -m engine.cli discover \
     --goal "Sign on to the console as the supplied operator" \
     --target $ENGINE_TARGET \
     --param username=operator1 --param password=pass123 --secret password \
-    --capability-id operator_login --description "Establish an operator session."
+    --capability-id operator_login \
+    --description "Establish an operator session."
 
-# 2. Discover the real goal, starting from a session the recorded login establishes.
+# 5b. Discover the real goal, reusing the login capability as a prerequisite.
 .venv/bin/python -m engine.cli discover \
     --goal "Look up member 10001 and read their savings balance" \
     --target $ENGINE_TARGET --requires operator_login \
     --param username=operator1 --param password=pass123 --secret password \
     --capability-id lookup_member_and_get_savings_balance \
     --description "Look up a member by ID and read their current savings balance."
+```
 
-# 3. Replay it — deterministic, no LLM anywhere in this path.
-.venv/bin/python -m engine.cli replay --capability lookup_member_and_get_savings_balance \
-    --param member_id=10001 --param username=operator1 --param password=pass123
+Each run prints the status, the number of steps and model calls, the artifact it saved and the
+report it wrote. Watch the browser window while it goes: that is the loop observing, deciding
+and acting.
 
-# 4. A member that does not exist. On a cold system this is a HARD FAILURE — nothing has
-#    told the engine what "not found" means here — and the report suggests detectors.
-.venv/bin/python -m engine.cli replay --capability lookup_member_and_get_savings_balance \
+Useful options: `--max-steps` (default 25), `--timeout` in seconds (default 180),
+`--no-escalation` to halt on a risky control instead of pausing for a human.
+
+### Step 6. Teach the system what a refusal looks like
+
+The committed artifacts ship **cold**: `known_outcomes` is empty, because a discovery run only
+ever walks the success path and so never sees the application refuse. Watch what happens with
+a member that does not exist:
+
+```bash
+.venv/bin/python -m engine.cli replay \
+    --capability lookup_member_and_get_savings_balance \
+    --target http://127.0.0.1:5050 \
     --param member_id=99999 --param username=operator1 --param password=pass123
+```
 
-# 5. Name it once. The Knowledge Base keeps it for this application from now on.
-.venv/bin/python -m engine.cli learn-outcome --app-id 127.0.0.1_5050 \
+This reports `hard_failure`, and that is the design working rather than a bug. The system has
+genuinely never seen that screen, and guessing that an unfamiliar banner means "routine"
+instead of "the database is down" is exactly the judgement it should not make alone. The report
+suggests detectors you could name it with.
+
+Name it once, and the Knowledge Base keeps it for this application from now on:
+
+```bash
+.venv/bin/python -m engine.cli learn-outcome \
+    --app-id 127.0.0.1_5050 \
     --code member_not_found --type business_outcome \
     --text-contains "No matching member found" \
     --capability lookup_member_and_get_savings_balance
-
-# 6. Re-run step 4. Same input, same artifact — now a clean business outcome.
-
-.venv/bin/python -m engine.cli list-artifacts
 ```
 
-Step 4 reporting a hard failure is the design working, not a bug. The system has genuinely
-never seen that state, and guessing that an unfamiliar red banner means "routine" rather
-than "the database is down" is exactly the judgement it should not make on its own.
+Run the same replay again. Same input, same artifact, now a clean `business_outcome`, and the
+capability has been bumped to `v1.0.1`. That is the whole learning loop.
 
-Every run — success, business outcome, escalation or hard failure — writes a report with
-per-step screenshots under `evidence/discovery_runs/<run_id>/` or
-`evidence/replay_runs/<run_id>/`.
+### Step 7. Drive it with one sentence instead of flags
 
-## One sentence instead of the flags
-
-`run` is steps 1–3 without hand-assembling any of it. One model call turns the sentence into
-an ordered plan — which capabilities, in what order, replaying what is already recorded and
-discovering only what is not — and prints it for confirmation before a browser opens. Nothing
-about *how* to drive the application is decided here; a recorded capability still replays with
-no LLM in the loop.
+`run` turns a sentence into an ordered plan with a single model call, replaying what is already
+recorded and discovering only what is not. It prints the plan and waits for confirmation before
+a browser opens.
 
 ```bash
 .venv/bin/python -m engine.cli run --target $ENGINE_TARGET \
     --prompt "Sign on to the console as operator1/pass123, then look up member 10001 \
               and get their savings balance"
+```
 
+```
 Plan (2 calls) against http://127.0.0.1:5050:
 1. [REPLAY (existing)] operator_login(username=operator1, password=[REDACTED])
 2. [REPLAY (existing)] lookup_member_and_get_savings_balance(member_id=10001) [requires: operator_login]
@@ -183,34 +180,90 @@ Plan (2 calls) against http://127.0.0.1:5050:
 Proceed? [y/N]:
 ```
 
-A value the prompt supplies for a credential is marked secret by the parser and stays that way
-through the run: redacted in the plan preview, and never written to the artifact, the logs or
-the reports. `--dry-run` prints the plan and stops without opening a browser; `--yes` skips the
-confirmation, for scripted and CI use.
+A credential in the prompt is marked secret by the parser and stays redacted through the run.
+Add `--dry-run` to print the plan and stop without opening a browser, or `--yes` to skip the
+confirmation in scripts and CI.
 
-## Outcomes
+---
 
-Replay reports one of four statuses, and the distinction is the point:
+## Command reference
+
+| Command | What it does |
+|---|---|
+| `discover` | Run the agent loop against a live UI and record a capability. Needs a model key. |
+| `replay` | Execute a recorded capability deterministically. Needs no model key. |
+| `run` | Turn one sentence into a plan, then replay or discover each step of it. |
+| `learn-outcome` | Name a state the system met but did not recognise, for this application. |
+| `list-artifacts` | Show every capability in the store, with version, status and outcome count. |
+| `list-escalations` | Show intervention requests, including any waiting for a human. |
+
+Global options go before the command: `--verbose` for debug logging, `--headless` to hide the
+browser, `--policy PATH` to supply your own safety policy.
+
+Run `.venv/bin/python -m engine.cli COMMAND --help` for the full list of options.
+
+## What the four replay statuses mean
 
 | Status | Meaning | Example |
 |---|---|---|
 | `success` | Every step ran and the checkpoint held. | Balance read for member `10001`. |
 | `business_outcome` | The application correctly said no. | `member_not_found` for `99999`; `permission_denied` for restricted member `10005`. |
-| `recoverable` | Something interrupted the run that a retry could survive. | The operator session expired mid-flow. |
-| `hard_failure` | Something the artifact was never recorded to handle. | The first `99999` lookup, before anyone has named "not found". |
+| `recoverable` | Something transient interrupted the run. | The operator session expired part way through. |
+| `hard_failure` | A state the artifact was never recorded to handle. | The first `99999` lookup, before anyone has named it. |
 
-## Development utilities
+## Where the output goes
+
+| Path | What lands there |
+|---|---|
+| `data/artifacts/` | One JSON capability per file. Committed, because it is what a reviewer reads. |
+| `data/kb/` | What the system has learned about each application. Empty on a fresh checkout. |
+| `data/escalations/` | Open intervention requests. |
+| `evidence/discovery_runs/`, `evidence/replay_runs/` | Your own runs: a report plus a screenshot per step. Gitignored. |
+| `evidence/submission/` | The committed demonstration: discovery, replay, all four statuses, an escalation. |
+
+## When something goes wrong
+
+| Symptom | Fix |
+|---|---|
+| `Connection refused` on 127.0.0.1:5050 | The sample application is not running. Go back to step 1. |
+| `Executable doesn't exist` from Playwright | You skipped `.venv/bin/playwright install chromium` in step 2. |
+| `GEMINI_MODEL is required` | Set it in `.env`. There is no default in the code on purpose, so a retired model is refused at startup rather than part way through a run. |
+| `Invalid username or password`, or any setting that seems ignored | An exported shell variable wins over `.env`. Check with `env \| grep COREBANK` and unset the stale one. |
+| A 404 or 429 from the model | Check the name and your tier with `.venv/bin/python -m scripts.probe_models flash`. |
+| Port 5050 already in use | `run.sh` frees it for you; to use another port, set `PORT` in `target_app/.env` and pass the new URL as `--target`. |
+| The run pauses and asks you to press Enter | That is an escalation. The visible window is yours: act in it, then press Enter and the run resumes from what you left behind. |
+
+## Checks you can run
 
 ```bash
-.venv/bin/python -m scripts.probe_models flash   # which models this key can use now
-.venv/bin/python -m engine.schema.validate data/artifacts/lookup_member_and_get_savings_balance.json
-ENGINE_HEADLESS=1 .venv/bin/python -m engine.surface._manual_check    # observe the live app
-ENGINE_HEADLESS=1 .venv/bin/python -m scripts.replay_scenarios        # every replay outcome class
-.venv/bin/python -m scripts.intent_scenarios           # plan parsing, offline (--live to parse for real)
+# Every branch of the replay result contract, against a live browser.
+# Runs hermetically: a temporary artifact store and a temporary Knowledge Base.
+ENGINE_HEADLESS=1 .venv/bin/python -m scripts.replay_scenarios
+
+# Intent parsing, offline. No browser, no model. Add --live to parse for real.
+.venv/bin/python -m scripts.intent_scenarios
+
+# The sample application's own acceptance tests.
+cd target_app && ./test.sh
 ```
 
-`replay_scenarios` runs hermetically: it copies the artifact catalogue into a temporary store
-and uses a temporary Knowledge Base, because two of its scenarios *teach* the system an
-outcome and one bumps an artifact's version. A dev sweep must not rewrite the committed
-catalogue as a side effect of being run, and it must start from the same cold KB every time —
-otherwise the "first encounter is a hard failure" scenarios would pass only once.
+Other utilities:
+
+```bash
+.venv/bin/python -m scripts.probe_models flash        # which models this key can use
+.venv/bin/python -m engine.schema.validate data/artifacts/operator_login.json
+ENGINE_HEADLESS=1 .venv/bin/python -m engine.surface._manual_check   # observe the live app
+```
+
+## Repository layout
+
+| Path | What it is |
+|---|---|
+| `engine/` | The capability engine. Contains no knowledge of any application. |
+| `engine/schema/artifact.py` | The artifact contract: steps, typed inputs and outputs, checkpoint, known outcomes. |
+| `engine/discovery/` | The agent loop, grounding, loop guard, model client. |
+| `engine/replay/` | Deterministic execution. There is no model call anywhere in this package. |
+| `engine/surface/` | The seam that touches the application. Playwright today, desktop later. |
+| `engine/policy/defaults.yaml` | Operator safety policy. Applies to any application; override with `--policy`. |
+| `target_app/` | Member Servicing Portal, a Flask app styled like a legacy system, used as one target. Swappable. |
+| `scripts/` | Offline and live check suites, and the model prober. |

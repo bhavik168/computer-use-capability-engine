@@ -62,7 +62,7 @@ class ReplayEngine:
                 self.escalation.raise_intervention_for_replay(
                     capability_id=artifact.capability_id,
                     current_step=result.failed_at_step or "(after final step)",
-                    reason=f"{result.status}: {result.outcome_code} — {result.message}",
+                    reason=f"{result.status}: {result.outcome_code}, {result.message}",
                     screenshot=self.surface.safe_screenshot(),
                     # A hard failure means this capability met a state nobody has named yet.
                     # Hand the human the strings worth naming it with.
@@ -110,7 +110,7 @@ class ReplayEngine:
                     StepLog(
                         step_id=step.step_id,
                         action=step.action,
-                        description=f"{self._describe(step, params, artifact=artifact)} — raised {type(exc).__name__}",
+                        description=f"{self._describe(step, params, artifact=artifact)} (raised {type(exc).__name__})",
                         url=self.surface.safe_url(),
                         verified=False,
                         error=str(exc),
@@ -289,7 +289,7 @@ class ReplayEngine:
                     StepLog(
                         step_id=step.step_id,
                         action=step.action,
-                        description=f"{self._describe(step, params, artifact=artifact)} — target not found",
+                        description=f"{self._describe(step, params, artifact=artifact)} (target not found)",
                         url=self.surface.safe_url(),
                         verified=False,
                         error=(
@@ -430,9 +430,9 @@ class ReplayEngine:
         if step.action in ("type", "select"):
             value = self._value_for(step, params)
             shown = self._display_value(artifact, step, value) if artifact else repr(value)
-            return f"{base} — entered {shown}"
+            return f"{base}, entered {shown}"
         if step.action == "extract" and extracted is not None:
-            return f"{base} — read {extracted.get(step.step_id, '')!r}"
+            return f"{base}, read {extracted.get(step.step_id, '')!r}"
         return base
 
     @staticmethod
