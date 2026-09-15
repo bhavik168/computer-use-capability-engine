@@ -150,7 +150,7 @@ class ReplayEngine:
                     )
                 )
 
-        return finish(self._evaluate_checkpoint(artifact, extracted))
+        return finish(self._evaluate_checkpoint(artifact, extracted, params))
 
     # ------------------------------------------------------------------ prerequisites
 
@@ -231,7 +231,7 @@ class ReplayEngine:
             self.surface.navigate(step.target.value)
         else:
             assert isinstance(step.target, ElementTarget)
-            locator = step.target.locator.model_dump()
+            locator = self._render_locator(step.target.locator.model_dump(), params)
             element_id = self.surface.resolve_locator(locator)
             strategy = self.surface.last_resolution_strategy()
 
@@ -295,7 +295,7 @@ class ReplayEngine:
 
     # ------------------------------------------------------------------ checkpoint
 
-    def _evaluate_checkpoint(self, artifact: Artifact, extracted: dict) -> RunResult:
+    def _evaluate_checkpoint(self, artifact: Artifact, extracted: dict, params: dict) -> RunResult:
         checkpoint = artifact.checkpoint
         observed: str
 
@@ -310,7 +310,9 @@ class ReplayEngine:
                 return self._success(artifact, extracted)
             expectation = f"URL containing {checkpoint.text!r}"
         else:
-            element_id = self.surface.resolve_locator(checkpoint.target.locator.model_dump())
+            element_id = self.surface.resolve_locator(
+                self._render_locator(checkpoint.target.locator.model_dump(), params)
+            )
             if element_id is None:
                 observed = self.surface.current_url()
                 expectation = (
@@ -362,6 +364,31 @@ class ReplayEngine:
         if step.value_from_param:
             return str(params[step.value_from_param])
         return str(step.value or "")
+
+    @staticmethod
+    def _render_locator(locator: dict, params: dict) -> dict:
+        """Substitute `{{param}}` placeholders in a locator's values with the run's params.
+
+        The Recorder lifts a caller-supplied value out of a locator whose accessible name
+        embeds it (`link:{{member_id}}`), so this resolves it back for the member actually
+        being looked up. Locators carrying no placeholder — the common case, and every
+        artifact compiled before templating existed — pass through unchanged.
+        """
+        if not params:
+            return locator
+
+        def render(text: str) -> str:
+            for name, value in params.items():
+                text = text.replace(f"{{{{{name}}}}}", str(value))
+            return text
+
+        def render_rule(rule: dict) -> dict:
+            return {**rule, "value": render(rule["value"])}
+
+        return {
+            "primary": render_rule(locator["primary"]),
+            "fallbacks": [render_rule(rule) for rule in locator.get("fallbacks", [])],
+        }
 
     @staticmethod
     def _display_value(artifact: Artifact, step: Step, value: str) -> str:

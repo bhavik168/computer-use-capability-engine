@@ -50,6 +50,7 @@ class Recorder:
         secret_params: set[str] | None = None,
         requires: list[str] | None = None,
         version: str = "1.0.0",
+        param_values: dict[str, str] | None = None,
     ) -> Artifact:
         if trace.status != "completed":
             raise ValueError(
@@ -69,6 +70,21 @@ class Recorder:
                 description=f"Open the capability's entry point, {_relative(trace.target_url)}",
             )
         ]
+        # The values the caller supplied for this discovery run, longest first so that a
+        # value which contains another (member_id "10002" contains the deposit "100") is
+        # matched before the shorter one and never half-templated. Used to lift a hard-coded
+        # value back out of a locator whose accessible name embeds it — the result link's
+        # name *is* "10007", the detail heading *is* "…Frank Osei (10007)" — so the compiled
+        # capability targets `link:{{member_id}}`, not one specific member.
+        self._templatable = sorted(
+            (
+                (str(value), name)
+                for name, value in (param_values or {}).items()
+                if value and len(str(value)) >= 3
+            ),
+            key=lambda pair: len(pair[0]),
+            reverse=True,
+        )
         params: dict[str, InputParam] = {}
         outputs: list[Output] = []
         last_extract: TraceStep | None = None
@@ -96,7 +112,7 @@ class Recorder:
             target = ElementTarget(
                 # Backfilled by the Knowledge Base once it owns the element registry.
                 kb_element_id=None,
-                locator=Locator.model_validate(locator),
+                locator=Locator.model_validate(self._templatize_locator(locator)),
             )
 
             if trace_step.action == "type":
@@ -188,7 +204,10 @@ class Recorder:
             return Checkpoint(
                 type="element_present_with_pattern",
                 target=ElementTarget(
-                    kb_element_id=None, locator=Locator.model_validate(last_extract.locator)
+                    kb_element_id=None,
+                    locator=Locator.model_validate(
+                        self._templatize_locator(last_extract.locator)
+                    ),
                 ),
                 pattern=_pattern_for(last_extract.extracted_value),
             )
@@ -223,8 +242,11 @@ class Recorder:
         return None if Recorder.PLACEHOLDER.match(value) else (value or None)
 
     def _output_name(self, trace: DiscoveryTrace, step: TraceStep) -> str:
-        name = _slug(step.element_name or "")
-        if not name or name[0].isdigit() or _looks_like_money(step.element_name):
+        # Drop any caller-supplied value out of the name too, so a member-scoped extract is
+        # not immortalised as `member_detail_frank_osei_10007`.
+        raw = self._strip_param_values(step.element_name or "", as_template=False)
+        name = _slug(raw)
+        if not name or name == "value" or name[0].isdigit() or _looks_like_money(step.element_name):
             return "result"
         return name
 
@@ -233,6 +255,40 @@ class Recorder:
         if not value:
             return None
         return {"primary": {"strategy": "role+name", "value": value}, "fallbacks": []}
+
+    def _templatize_locator(self, locator: dict) -> dict:
+        """Rewrite a supplied parameter value embedded in a locator into `{{param}}`.
+
+        A `role+name` locator carries the element's accessible name, and for a search result
+        or a record heading that name *is* the identifier the caller passed in — `link:10007`,
+        `heading:Member Detail — Frank Osei (10007)`. Frozen literally, the capability only
+        ever resolves for that one member and silently rides positional fallbacks for any
+        other. Substituting the value back out (`link:{{member_id}}`) makes the locator mean
+        what discovery actually did: act on *the member the caller named*. Replay renders the
+        placeholder from its params before resolving. A no-op when no value is embedded, so
+        stable locators like `textbox:Username` are untouched.
+        """
+        if not self._templatable:
+            return locator
+
+        def render(rule: dict) -> dict:
+            return {**rule, "value": self._strip_param_values(rule["value"], as_template=True)}
+
+        return {
+            "primary": render(locator["primary"]),
+            "fallbacks": [render(rule) for rule in locator.get("fallbacks", [])],
+        }
+
+    def _strip_param_values(self, text: str, *, as_template: bool) -> str:
+        """Replace each embedded parameter value with its `{{name}}` template (or drop it).
+
+        Longest value first (see `self._templatable`) so an overlapping shorter value cannot
+        corrupt a substitution already made.
+        """
+        for value, name in self._templatable:
+            if value in text:
+                text = text.replace(value, f"{{{{{name}}}}}" if as_template else "")
+        return text
 
     @staticmethod
     def _confidence(trace: DiscoveryTrace) -> float:

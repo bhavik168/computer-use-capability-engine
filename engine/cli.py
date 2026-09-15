@@ -208,6 +208,7 @@ def _run_discovery(
     artifact = Recorder(knowledge_base).compile(
         trace, capability_id, description,
         secret_params=set(secret_params), requires=list(requires),
+        param_values=params,
     )
     path = store.save(artifact)
     result.update(
