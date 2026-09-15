@@ -137,7 +137,13 @@ class DiscoveryEngine:
             step_number += 1
             step_id = f"s{step_number}"
 
-            last_action_mutating = decision.action != "extract"
+            # `extract` reads a value and `type` fills a field: both change page content
+            # (a read leaves it untouched; a typed value is not part of the role/name hash),
+            # so the resulting screen is semantically identical to the one before it. Feeding
+            # that to the cycle detector halts a multi-field form one keystroke in — the agent
+            # entering the second field looks like it is stuck on the first. Neither
+            # contributes a hash; runaway typing is still bounded by the step and time budgets.
+            last_action_mutating = decision.action not in ("extract", "type")
             outcome, step = self._apply(step_id, decision, elements, url, trace, values)
             if step is not None:
                 trace.steps.append(step)

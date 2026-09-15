@@ -44,11 +44,14 @@ class LoopGuard:
         """Note the state the next decision will be made from.
 
         `mutating` says whether the action that led here was *supposed* to change the
-        screen. Reading a value is not: an `extract` leaves the page exactly as it was, so
-        recording the resulting state would make the cycle detector conclude the agent is
-        stuck at the precise moment it has finished gathering what the goal asked for. That
-        killed every read-only capability one step before it could report success, so a
-        non-mutating action contributes no hash — there is nothing meaningful to compare.
+        semantic state (the URL plus the sorted role/name pairs). Two actions do not:
+        `extract` reads a value and leaves the page exactly as it was, and `type` fills a
+        field whose value is not part of that signature. Recording the resulting state would
+        make the cycle detector conclude the agent is stuck at the precise moment it has
+        finished gathering what the goal asked for, or one keystroke into a multi-field form.
+        That killed every read-only capability a step before it could report success and
+        halted any form with two inputs, so a non-mutating action contributes no hash —
+        there is nothing meaningful to compare.
         """
         if not mutating:
             return
