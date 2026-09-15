@@ -5,7 +5,7 @@ The baseline app: search -> detail -> action, with inline validation, a
 not-found outcome, a permission-denied outcome on restricted members, and a
 session that expires on inactivity.
 
-    ./run.sh    -> http://127.0.0.1:5001   (operator1/pass123)
+    ./run.sh    -> http://127.0.0.1:5050   (operator1/pass123)
 """
 import os
 import time
@@ -23,7 +23,7 @@ except ImportError:  # python-dotenv is optional at runtime
 app = Flask(__name__)
 app.secret_key = os.environ.get("FLASK_SECRET_KEY", "change-me-dev-secret")
 SESSION_TIMEOUT_SECONDS = int(os.environ.get("SESSION_TIMEOUT_SECONDS", "90"))
-PORT = int(os.environ.get("PORT", "5001"))
+PORT = int(os.environ.get("PORT", "5050"))
 
 store = db.get_store()
 

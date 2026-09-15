@@ -87,7 +87,7 @@ The browser runs **non-headless by default** — the visible window is what a hu
 control of during an escalation handoff. Set `ENGINE_HEADLESS=1` (or pass `--headless`) for
 unattended runs.
 
-Operator credentials default to `operator1` / `pass1234`; override with `COREBANK_USERNAME`
+Operator credentials default to `operator1` / `pass123`; override with `COREBANK_USERNAME`
 and `COREBANK_PASSWORD`.
 
 ## Demo path
@@ -100,25 +100,25 @@ export ENGINE_TARGET=http://127.0.0.1:5050
 .venv/bin/python -m engine.cli discover \
     --goal "Sign on to the console as the supplied operator" \
     --target $ENGINE_TARGET \
-    --param username=operator1 --param password=pass1234 --secret password \
+    --param username=operator1 --param password=pass123 --secret password \
     --capability-id operator_login --description "Establish an operator session."
 
 # 2. Discover the real goal, starting from a session the recorded login establishes.
 .venv/bin/python -m engine.cli discover \
     --goal "Look up member 10001 and read their savings balance" \
     --target $ENGINE_TARGET --requires operator_login \
-    --param username=operator1 --param password=pass1234 --secret password \
+    --param username=operator1 --param password=pass123 --secret password \
     --capability-id check_savings_balance \
     --description "Look up a member by ID and read their current savings balance."
 
 # 3. Replay it — deterministic, no LLM anywhere in this path.
 .venv/bin/python -m engine.cli replay --capability check_savings_balance \
-    --param member_id=10001 --param username=operator1 --param password=pass1234
+    --param member_id=10001 --param username=operator1 --param password=pass123
 
 # 4. A member that does not exist. On a cold system this is a HARD FAILURE — nothing has
 #    told the engine what "not found" means here — and the report suggests detectors.
 .venv/bin/python -m engine.cli replay --capability check_savings_balance \
-    --param member_id=99999 --param username=operator1 --param password=pass1234
+    --param member_id=99999 --param username=operator1 --param password=pass123
 
 # 5. Name it once. The Knowledge Base keeps it for this application from now on.
 .venv/bin/python -m engine.cli learn-outcome --app-id 127.0.0.1_5050 \
@@ -149,7 +149,7 @@ no LLM in the loop.
 
 ```bash
 .venv/bin/python -m engine.cli run --target $ENGINE_TARGET \
-    --prompt "Sign on to the console as operator1/pass1234, then look up member 10001 \
+    --prompt "Sign on to the console as operator1/pass123, then look up member 10001 \
               and get their savings balance"
 
 Plan (2 calls) against http://127.0.0.1:5050:
@@ -171,7 +171,7 @@ Replay reports one of four statuses, and the distinction is the point:
 | Status | Meaning | Example |
 |---|---|---|
 | `success` | Every step ran and the checkpoint held. | Balance read for member `10001`. |
-| `business_outcome` | The application correctly said no. | `member_not_found` for `99999`; `permission_denied` for `10007`. |
+| `business_outcome` | The application correctly said no. | `member_not_found` for `99999`; `permission_denied` for `10005`. |
 | `recoverable` | Something interrupted the run that a retry could survive. | `session_expired` mid-transfer for `10003`. |
 | `hard_failure` | Something the artifact was never recorded to handle. | A transfer over 1,000,000 crashes the app; no detector matches. |
 

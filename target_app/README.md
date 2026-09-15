@@ -11,7 +11,7 @@ JavaScript.
 ## Run
 
 ```bash
-./run.sh          # http://127.0.0.1:5001
+./run.sh          # http://127.0.0.1:5050
 ```
 
 `run.sh` creates `.venv` if missing, installs `requirements.txt`, copies
@@ -108,5 +108,5 @@ to `/session-expired`. Unauthenticated access redirects to `/login`.
 
 ```bash
 ./test.sh                                  # 39 acceptance checks
-curl -s localhost:5001/healthz             # -> OK
+curl -s localhost:5050/healthz             # -> OK
 ```

@@ -31,7 +31,7 @@ FIXTURES = Path("fixtures/corebank")
 TARGET = "http://127.0.0.1:5050"
 
 GOAL = (
-    "Sign on to the console as operator1/pass1234, then look up member 10001 "
+    "Sign on to the console as operator1/pass123, then look up member 10001 "
     "and get their savings balance"
 )
 
@@ -44,7 +44,7 @@ PLAN_JSON = json.dumps(
                 "goal": "Sign on to the console with the given username and password.",
                 "params": [
                     {"name": "username", "value": "operator1", "secret": False},
-                    {"name": "password", "value": "pass1234", "secret": True},
+                    {"name": "password", "value": "pass123", "secret": True},
                 ],
                 "requires": [],
                 "matched_existing": True,
@@ -104,7 +104,7 @@ def offline() -> bool:
     ok &= _check("both calls resolve to stored artifacts", all(c.matched_existing for c in calls))
 
     preview = format_plan_for_confirmation(calls)
-    ok &= _check("the preview redacts the password", "pass1234" not in preview and "[REDACTED]" in preview)
+    ok &= _check("the preview redacts the password", "pass123" not in preview and "[REDACTED]" in preview)
     ok &= _check("the preview names the member id", "member_id=10001" in preview)
     print("\n" + preview + "\n")
 
@@ -150,7 +150,7 @@ def offline() -> bool:
     # The lookup re-establishes the session itself, so it needs the sign-on's params.
     ok &= _check("a call inherits the parameters of what it requires",
                  seen_params["check_savings_balance"] ==
-                 {"username": "operator1", "password": "pass1234", "member_id": "10001"},
+                 {"username": "operator1", "password": "pass123", "member_id": "10001"},
                  str(seen_params["check_savings_balance"]))
 
     # An unrecorded capability is the discovery branch, and a failure there stops the plan.

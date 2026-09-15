@@ -29,13 +29,13 @@ ENTRY = "http://127.0.0.1:5050"
 
 CREDENTIALS = {
     "username": os.environ.get("COREBANK_USERNAME", "operator1"),
-    "password": os.environ.get("COREBANK_PASSWORD", "pass1234"),
+    "password": os.environ.get("COREBANK_PASSWORD", "pass123"),
 }
 
 SCENARIOS = [
     ("check_savings_balance", {"member_id": "10001"}, "success"),
     ("check_savings_balance", {"member_id": "99999"}, "business_outcome"),
-    ("check_savings_balance", {"member_id": "10007"}, "business_outcome"),
+    ("check_savings_balance", {"member_id": "10005"}, "business_outcome"),
     ("transfer_funds", {"member_id": "10003", "amount": "50.00", "target_account": "778812345"},
      "recoverable"),
     ("transfer_funds", {"member_id": "10001", "amount": "2000000", "target_account": "778812345"},

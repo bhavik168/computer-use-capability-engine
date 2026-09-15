@@ -3,7 +3,7 @@ Intent parser — the front door for a plain-language goal.
 
 Turns a prompt like:
 
-    "Sign on to the console as operator1/pass1234, then look up
+    "Sign on to the console as operator1/pass123, then look up
     member 10001 and get their savings balance"
 
 into an ordered list of CapabilityCall objects that the existing

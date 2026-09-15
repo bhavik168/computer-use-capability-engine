@@ -15,7 +15,7 @@ if [ ! -f .env ]; then
 fi
 
 PORT="$(grep -E '^PORT=' .env | cut -d= -f2 | tr -d '[:space:]')"
-PORT="${PORT:-5001}"
+PORT="${PORT:-5050}"
 if lsof -ti tcp:"$PORT" >/dev/null 2>&1; then
   echo "Port $PORT is in use — stopping the existing listener."
   lsof -ti tcp:"$PORT" | xargs kill -9 || true
