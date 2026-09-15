@@ -57,7 +57,6 @@ exported value wins over the file.
 | `GEMINI_MODEL` | `discover` and `run` only | `gemini-3.5-flash-lite` |
 | `ENGINE_TARGET` | `replay` and `run`, unless you pass `--target` | `http://127.0.0.1:5050` |
 | `ENGINE_HEADLESS` | set to `1` to hide the browser window | unset, so the window is visible |
-| `COREBANK_USERNAME`, `COREBANK_PASSWORD` | the sample application's operator | `operator1` / `pass123` |
 
 Leave `ENGINE_HEADLESS` unset for a first run. The visible window is the point: it is what a
 human takes control of during an escalation.
@@ -228,7 +227,8 @@ Run `.venv/bin/python -m engine.cli COMMAND --help` for the full list of options
 | `Connection refused` on 127.0.0.1:5050 | The sample application is not running. Go back to step 1. |
 | `Executable doesn't exist` from Playwright | You skipped `.venv/bin/playwright install chromium` in step 2. |
 | `GEMINI_MODEL is required` | Set it in `.env`. There is no default in the code on purpose, so a retired model is refused at startup rather than part way through a run. |
-| `Invalid username or password`, or any setting that seems ignored | An exported shell variable wins over `.env`. Check with `env \| grep COREBANK` and unset the stale one. |
+| `Invalid username or password` | The operator account is supplied per run — `--param username=... --param password=...` for the CLI, `ENGINE_USERNAME` / `ENGINE_PASSWORD` for `scripts.replay_scenarios` — and never configured in `.env`. Check it against the accounts the target ships. |
+| Any other setting that seems ignored | An exported shell variable wins over `.env`. Check with `env \| grep -E 'GEMINI\|ENGINE'` and unset the stale one. |
 | A 404 or 429 from the model | Check the name and your tier with `.venv/bin/python -m scripts.probe_models flash`. |
 | Port 5050 already in use | `run.sh` frees it for you; to use another port, set `PORT` in `target_app/.env` and pass the new URL as `--target`. |
 | The run pauses and asks you to press Enter | That is an escalation. The visible window is yours: act in it, then press Enter and the run resumes from what you left behind. |
@@ -238,7 +238,9 @@ Run `.venv/bin/python -m engine.cli COMMAND --help` for the full list of options
 ```bash
 # Every branch of the replay result contract, against a live browser.
 # Runs hermetically: a temporary artifact store and a temporary Knowledge Base.
-ENGINE_HEADLESS=1 .venv/bin/python -m scripts.replay_scenarios
+# The operator is passed in, not baked in — for the sample app, that is operator1/pass123.
+ENGINE_HEADLESS=1 ENGINE_USERNAME=operator1 ENGINE_PASSWORD=pass123 \
+    .venv/bin/python -m scripts.replay_scenarios
 
 # Intent parsing, offline. No browser, no model. Add --live to parse for real.
 .venv/bin/python -m scripts.intent_scenarios

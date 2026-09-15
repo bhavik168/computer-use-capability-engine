@@ -1,8 +1,10 @@
 """Dev utility: exercise every branch of the replay result contract, end to end.
 
-    python -m scripts.replay_scenarios
+    ENGINE_USERNAME=... ENGINE_PASSWORD=... python -m scripts.replay_scenarios
 
-Requires the target app running on 127.0.0.1:5050. Set ENGINE_HEADLESS=1 for no window.
+Requires a target application running and an operator account on it. `ENGINE_TARGET` says
+where (default `http://127.0.0.1:5050`); the credentials have no default and are never read
+from a committed file. Set ENGINE_HEADLESS=1 for no window.
 
 This is the closest thing the project has to an integration test for the thing that matters
 most about replay: not "did it click the button" but "did it tell the caller the truth about
@@ -24,6 +26,7 @@ import shutil
 import sys
 import tempfile
 from pathlib import Path
+from urllib.parse import urlparse
 
 from engine.escalation.service import EscalationService
 from engine.knowledge_base.service import KnowledgeBaseService
@@ -35,19 +38,45 @@ from engine.storage.artifact_store import ArtifactStore
 from engine.surface.playwright_surface import PlaywrightSurface
 
 ARTIFACTS = Path("data/artifacts")
-ENTRY = "http://127.0.0.1:5050"
-APP_ID = "127.0.0.1_5050"
+
+# Where to point, and who to sign on as, are supplied per run — never baked in here. The
+# deployment under test changes, and so do the accounts it ships; a harness that knows an
+# application's operator by name is the coupling this engine exists to avoid. `password`
+# is declared `secret` in the artifact, so it is typed at the keyboard and redacted out of
+# every artifact, log and report: a copy of it sitting in a committed file would be the one
+# place that boundary leaks.
+ENTRY = os.environ.get("ENGINE_TARGET", "http://127.0.0.1:5050")
+
+# The same identity rule the CLI applies, so a sweep shares a Knowledge Base with the
+# `replay` runs it is standing in for instead of learning into a directory of its own.
+APP_ID = (urlparse(ENTRY).netloc or "unknown").replace(":", "_")
 
 BALANCE = "lookup_member_and_get_savings_balance"
 
-CREDENTIALS = {
-    "username": os.environ.get("COREBANK_USERNAME", "operator1"),
-    "password": os.environ.get("COREBANK_PASSWORD", "pass123"),
-}
+
+def credentials() -> dict[str, str]:
+    """The operator to sign on as, from the environment. Absent is a hard stop.
+
+    No default: guessing an account silently turns a missing credential into a login
+    failure reported three scenarios later as though the capability were broken.
+    """
+    username = os.environ.get("ENGINE_USERNAME")
+    password = os.environ.get("ENGINE_PASSWORD")
+    if not username or not password:
+        raise SystemExit(
+            "ENGINE_USERNAME and ENGINE_PASSWORD must be set to an operator account on "
+            f"{ENTRY}.\n"
+            "They are deliberately not read from .env or defaulted: credentials belong to "
+            "the deployment, not to the engine. Export them for the sweep, e.g.\n\n"
+            "    ENGINE_USERNAME=... ENGINE_PASSWORD=... python -m scripts.replay_scenarios\n"
+        )
+    return {"username": username, "password": password}
 
 
 def main() -> int:
     logging.basicConfig(level=logging.WARNING, format="%(levelname)s %(name)s: %(message)s")
+
+    creds = credentials()
 
     with tempfile.TemporaryDirectory(prefix="replay_scenarios_") as tmp:
         sandbox = Path(tmp)
@@ -77,7 +106,7 @@ def main() -> int:
                     store=store,
                     knowledge_base=kb,
                 )
-                result = engine.run(store.load(capability_id), {**params, **CREDENTIALS})
+                result = engine.run(store.load(capability_id), {**params, **creds})
                 ok = result.status == expected
                 failures += 0 if ok else 1
                 print(f"[{'PASS' if ok else 'FAIL'}] {label}")
